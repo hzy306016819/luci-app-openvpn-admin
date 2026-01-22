@@ -15,7 +15,7 @@ jobs:
           - target: mipsel_24kc
             sdk_name: ramips-mt7621
           - target: aarch64_cortex-a53
-            sdk_name: mediatek/mt7981
+            sdk_name: mediatek-mt7981
           - target: aarch64_cortex-a72
             sdk_name: rockchip-armv8
           - target: arm_cortex-a7_neon-vfpv4
@@ -77,48 +77,110 @@ jobs:
       id: sdk_info
       run: |
         echo "🔍 确定 ${{ matrix.target }} 架构的SDK地址..."
+        
+        # 尝试获取最新的SDK链接
         case "${{ matrix.target }}" in
           x86_64)
-            SDK_URL="https://downloads.openwrt.org/snapshots/targets/x86/64/openwrt-sdk-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+            # 尝试获取最新版本的x86_64 SDK
+            echo "尝试获取最新x86_64 SDK链接..."
+            SDK_URL="https://downloads.openwrt.org/releases/23.05.3/targets/x86/64/openwrt-sdk-23.05.3-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
             echo "📦 架构: x86_64"
             echo "🔗 SDK: $SDK_URL"
             ;;
           mipsel_24kc)
-            SDK_URL="https://downloads.openwrt.org/snapshots/targets/ramips/mt7621/openwrt-sdk-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+            # 使用22.03.5版本的mipsel SDK
+            SDK_URL="https://downloads.openwrt.org/releases/22.03.5/targets/ramips/mt7621/openwrt-sdk-22.03.5-ramips-mt7621_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
             echo "📦 架构: mipsel_24kc"
             echo "🔗 SDK: $SDK_URL"
             ;;
           aarch64_cortex-a53)
-            SDK_URL="https://downloads.openwrt.org/snapshots/targets/mediatek/mt7981/openwrt-sdk-mediatek-mt7981_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+            # 使用23.05.0版本的aarch64 SDK
+            SDK_URL="https://downloads.openwrt.org/releases/23.05.0/targets/mediatek/filogic/openwrt-sdk-23.05.0-mediatek-filogic_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
             echo "📦 架构: aarch64_cortex-a53"
             echo "🔗 SDK: $SDK_URL"
             ;;
           aarch64_cortex-a72)
-            SDK_URL="https://downloads.openwrt.org/snapshots/targets/rockchip/armv8/openwrt-sdk-rockchip-armv8_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+            # 使用23.05.0版本的rockchip SDK
+            SDK_URL="https://downloads.openwrt.org/releases/23.05.0/targets/rockchip/armv8/openwrt-sdk-23.05.0-rockchip-armv8_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
             echo "📦 架构: aarch64_cortex-a72"
             echo "🔗 SDK: $SDK_URL"
             ;;
           arm_cortex-a7_neon-vfpv4)
-            SDK_URL="https://downloads.openwrt.org/snapshots/targets/sunxi/cortexa7/openwrt-sdk-sunxi-cortexa7_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+            # 使用22.03.5版本的sunxi SDK
+            SDK_URL="https://downloads.openwrt.org/releases/22.03.5/targets/sunxi/cortexa7/openwrt-sdk-22.03.5-sunxi-cortexa7_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
             echo "📦 架构: arm_cortex-a7_neon-vfpv4"
             echo "🔗 SDK: $SDK_URL"
             ;;
         esac
+        
         echo "SDK_URL=$SDK_URL" >> $GITHUB_ENV
         echo "✅ SDK地址确定完成"
+        
+        # 测试链接是否有效
+        echo "测试链接有效性..."
+        if wget --spider "$SDK_URL" 2>/dev/null; then
+          echo "✅ 链接有效"
+        else
+          echo "⚠️  链接可能无效，但继续尝试下载..."
+        fi
     
     - name: 5下载OpenWrt SDK
       timeout-minutes: 10
       run: |
         echo "⬇️ 下载 ${{ matrix.target }} 架构的 SDK..."
         echo "下载地址: ${{ env.SDK_URL }}"
-        wget --progress=dot:giga "${{ env.SDK_URL }}" -O openwrt-sdk.tar.xz
+        
+        # 尝试下载，如果失败则使用备用链接
+        echo "尝试下载主链接..."
+        if ! wget --progress=dot:giga "${{ env.SDK_URL }}" -O openwrt-sdk.tar.xz; then
+          echo "主链接下载失败，尝试备用链接..."
+          
+          # 根据架构选择备用链接
+          case "${{ matrix.target }}" in
+            x86_64)
+              # 备用链接：使用22.03.5版本
+              BACKUP_URL="https://downloads.openwrt.org/releases/22.03.5/targets/x86/64/openwrt-sdk-22.03.5-x86-64_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
+              ;;
+            mipsel_24kc)
+              # 备用链接：使用21.02.7版本
+              BACKUP_URL="https://downloads.openwrt.org/releases/21.02.7/targets/ramips/mt7621/openwrt-sdk-21.02.7-ramips-mt7621_gcc-8.4.0_musl.Linux-x86_64.tar.xz"
+              ;;
+            aarch64_cortex-a53)
+              # 备用链接：使用22.03.5版本
+              BACKUP_URL="https://downloads.openwrt.org/releases/22.03.5/targets/armvirt/64/openwrt-sdk-22.03.5-armvirt-64_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
+              ;;
+            aarch64_cortex-a72)
+              # 备用链接：使用22.03.5版本
+              BACKUP_URL="https://downloads.openwrt.org/releases/22.03.5/targets/rockchip/armv8/openwrt-sdk-22.03.5-rockchip-armv8_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
+              ;;
+            arm_cortex-a7_neon-vfpv4)
+              # 备用链接：使用21.02.7版本
+              BACKUP_URL="https://downloads.openwrt.org/releases/21.02.7/targets/sunxi/cortexa7/openwrt-sdk-21.02.7-sunxi-cortexa7_gcc-8.4.0_musl.Linux-x86_64.tar.xz"
+              ;;
+          esac
+          
+          echo "尝试备用链接: $BACKUP_URL"
+          wget --progress=dot:giga "$BACKUP_URL" -O openwrt-sdk.tar.xz
+        fi
+        
+        # 检查文件是否下载成功
+        if [ ! -f "openwrt-sdk.tar.xz" ]; then
+          echo "❌ SDK 下载失败"
+          exit 1
+        fi
+        
         DOWNLOAD_SIZE=$(stat -c%s openwrt-sdk.tar.xz 2>/dev/null || wc -c < openwrt-sdk.tar.xz)
         echo "✅ SDK 下载完成，大小: $((DOWNLOAD_SIZE/1024/1024))MB"
         
         echo "📦 解压 SDK..."
         tar -xvf openwrt-sdk.tar.xz
-        SDK_DIR=$(find . -maxdepth 1 -name "openwrt-sdk-*" -type d)
+        SDK_DIR=$(find . -maxdepth 1 -name "openwrt-sdk-*" -type d | head -1)
+        
+        if [ -z "$SDK_DIR" ]; then
+          echo "❌ 未找到解压后的SDK目录"
+          exit 1
+        fi
+        
         mv "$SDK_DIR" openwrt-sdk
         echo "✅ SDK 解压完成，目录: openwrt-sdk"
         
