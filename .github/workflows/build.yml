@@ -1,0 +1,210 @@
+name: Build luci-app-openvpn-admin
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        target: [x86_64, mipsel_24kc, aarch64_cortex-a53, aarch64_cortex-a72, arm_cortex-a7_neon-vfpv4]
+        include:
+          - target: x86_64
+            device: x86/64
+            sdk_name: x86-64
+          - target: mipsel_24kc
+            device: ramips/mt7621
+            sdk_name: ramips-mt7621
+          - target: aarch64_cortex-a53
+            device: mediatek/mt7981  # 360T7
+            sdk_name: mediatek/mt7981
+          - target: aarch64_cortex-a72
+            device: rockchip/armv8
+            sdk_name: rockchip-armv8
+          - target: arm_cortex-a7_neon-vfpv4
+            device: sunxi/cortexa7
+            sdk_name: sunxi-cortexa7
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Setup Build Environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          libncurses5-dev \
+          libncursesw5-dev \
+          zlib1g-dev \
+          gawk \
+          git \
+          gettext \
+          libssl-dev \
+          xsltproc \
+          rsync \
+          wget \
+          unzip \
+          python3 \
+          python3-setuptools
+        echo "Build environment setup completed"
+    
+    - name: Download OpenWrt SDK
+      run: |
+        echo "Downloading SDK for ${{ matrix.target }}"
+        
+        # Set SDK URL based on architecture
+        case "${{ matrix.target }}" in
+          x86_64)
+            SDK_URL="https://downloads.openwrt.org/snapshots/targets/x86/64/openwrt-sdk-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+            ;;
+          mipsel_24kc)
+            SDK_URL="https://downloads.openwrt.org/snapshots/targets/ramips/mt7621/openwrt-sdk-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+            ;;
+          aarch64_cortex-a53)
+            SDK_URL="https://downloads.openwrt.org/snapshots/targets/mediatek/mt7981/openwrt-sdk-mediatek-mt7981_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+            ;;
+          aarch64_cortex-a72)
+            SDK_URL="https://downloads.openwrt.org/snapshots/targets/rockchip/armv8/openwrt-sdk-rockchip-armv8_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+            ;;
+          arm_cortex-a7_neon-vfpv4)
+            SDK_URL="https://downloads.openwrt.org/snapshots/targets/sunxi/cortexa7/openwrt-sdk-sunxi-cortexa7_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+            ;;
+          *)
+            echo "Unsupported target: ${{ matrix.target }}"
+            exit 1
+            ;;
+        esac
+        
+        wget -q "$SDK_URL" -O openwrt-sdk.tar.xz
+        tar -xf openwrt-sdk.tar.xz
+        mv openwrt-sdk-* openwrt-sdk
+        echo "SDK downloaded and extracted"
+    
+    - name: Build Package
+      run: |
+        cd openwrt-sdk
+        mkdir -p package/luci-app-openvpn-admin
+        
+        # Copy package files
+        cp -r ../files/* package/luci-app-openvpn-admin/
+        
+        # Create package Makefile
+        cat > package/luci-app-openvpn-admin/Makefile << 'EOF'
+        include $(TOPDIR)/rules.mk
+        
+        PKG_NAME:=luci-app-openvpn-admin
+        PKG_VERSION:=1.0.0
+        PKG_RELEASE:=$(shell date +%Y%m%d)
+        
+        PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
+        
+        include $(INCLUDE_DIR)/package.mk
+        
+        define Package/$(PKG_NAME)
+          SECTION:=luci
+          CATEGORY:=LuCI
+          SUBMENU:=3. Applications
+          TITLE:=OpenVPN Management Interface
+          PKGARCH:=all
+          DEPENDS:=+luci-base +openvpn-openssl +luci-lib-jsonc +easy-rsa +curl +openssl-util +netcat-openbsd
+        endef
+        
+        define Package/$(PKG_NAME)/description
+          A comprehensive OpenVPN management interface for OpenWrt/LEDE/ImmortalWrt.
+          Features include client management, certificate generation, connection monitoring,
+          and server configuration.
+        endef
+        
+        define Build/Prepare
+          mkdir -p $(PKG_BUILD_DIR)
+        endef
+        
+        define Build/Configure
+        endef
+        
+        define Build/Compile
+        endef
+        
+        define Package/$(PKG_NAME)/install
+          $(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
+          $(INSTALL_DATA) ./files/usr/lib/lua/luci/controller/openvpn-admin.lua \
+            $(1)/usr/lib/lua/luci/controller/
+          
+          $(INSTALL_DIR) $(1)/usr/lib/lua/luci/view/openvpn-admin
+          $(INSTALL_DATA) ./files/usr/lib/lua/luci/view/openvpn-admin/*.htm \
+            $(1)/usr/lib/lua/luci/view/openvpn-admin/
+          
+          $(INSTALL_DIR) $(1)/etc/config
+          $(INSTALL_DATA) ./files/etc/config/openvpn-admin \
+            $(1)/etc/config/
+          
+          $(INSTALL_DIR) $(1)/etc/openvpn-admin
+          $(INSTALL_BIN) ./files/etc/openvpn-admin/generate-client.sh \
+            $(1)/etc/openvpn-admin/
+          $(INSTALL_BIN) ./files/etc/openvpn-admin/client-connect-cn.sh \
+            $(1)/etc/openvpn-admin/
+          $(INSTALL_BIN) ./files/etc/openvpn-admin/clean-garbage.sh \
+            $(1)/etc/openvpn-admin/
+          $(INSTALL_DATA) ./files/etc/openvpn-admin/renewcert.sh \
+            $(1)/etc/openvpn-admin/
+          
+          $(INSTALL_DIR) $(1)/etc/openvpn-admin/template
+          echo "config openvpn 'myvpn'" > $(1)/etc/openvpn-admin/template/server.template
+          echo "    option enabled '1'" >> $(1)/etc/openvpn-admin/template/server.template
+          echo "    option port '1194'" >> $(1)/etc/openvpn-admin/template/server.template
+          echo "    option proto 'udp'" >> $(1)/etc/openvpn-admin/template/server.template
+          
+          $(INSTALL_DIR) $(1)/tmp/openvpn-admin
+        endef
+        
+        define Package/$(PKG_NAME)/postinst
+        #!/bin/sh
+        if [ -z "$${IPKG_INSTROOT}" ]; then
+          mkdir -p /etc/openvpn-admin/template 2>/dev/null
+          mkdir -p /tmp/openvpn-admin 2>/dev/null
+          mkdir -p /etc/openvpn/pki 2>/dev/null
+          chmod 755 /etc/openvpn-admin/*.sh 2>/dev/null || true
+          /etc/init.d/uhttpd restart >/dev/null 2>&1 || true
+        fi
+        exit 0
+        endef
+        
+        $(eval $(call BuildPackage,$(PKG_NAME)))
+        EOF
+        
+        # Build the package
+        make defconfig
+        make package/luci-app-openvpn-admin/compile V=s
+        
+        # Find and copy the built package
+        find bin -name "luci-app-openvpn-admin*.ipk" -type f | while read ipk; do
+          echo "Found IPK: $ipk"
+          cp "$ipk" ../luci-app-openvpn-admin-${{ matrix.target }}.ipk
+        done
+        
+        # List all packages for debugging
+        find bin -name "*.ipk" -type f | head -20
+    
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: luci-app-openvpn-admin-${{ matrix.target }}
+        path: |
+          luci-app-openvpn-admin-${{ matrix.target }}.ipk
+        retention-days: 7
+    
+    - name: Create Release on Tag
+      if: github.event_name == 'release'
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          luci-app-openvpn-admin-${{ matrix.target }}.ipk
+        draft: false
+        prerelease: false
