@@ -1,7 +1,7 @@
 # luci-app-openvpn-admin
 
-[![GitHub Release](https://img.shields.io/github/v/release/YOUR_USERNAME/luci-app-openvpn-admin)](https://github.com/YOUR_USERNAME/luci-app-openvpn-admin/releases)
-[![Build Status](https://github.com/YOUR_USERNAME/luci-app-openvpn-admin/workflows/Build%20luci-app-openvpn-admin/badge.svg)](https://github.com/YOUR_USERNAME/luci-app-openvpn-admin/actions)
+[![GitHub Release](https://img.shields.io/github/v/release/hzy306016819/luci-app-openvpn-admin)](https://github.com/hzy306016819/luci-app-openvpn-admin/releases)
+[![Build Status](https://github.com/hzy306016819/luci-app-openvpn-admin/workflows/Build%20luci-app-openvpn-admin/badge.svg)](https://github.com/hzy306016819/luci-app-openvpn-admin/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 一个功能完整的 OpenVPN 管理界面插件，适用于 OpenWrt/LEDE/ImmortalWrt 系统。
@@ -41,7 +41,7 @@
 
 ### 方法二：手动安装 IPK
 
-1. 从 [Releases 页面](https://github.com/YOUR_USERNAME/luci-app-openvpn-admin/releases) 下载对应架构的 IPK 文件
+1. 从 [Releases 页面](https://github.com/hzy306016819/luci-app-openvpn-admin/releases) 下载对应架构的 IPK 文件
 2. 通过 SSH 登录路由器
 3. 上传并安装 IPK 文件：
    ```bash
