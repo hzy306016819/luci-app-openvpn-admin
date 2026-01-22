@@ -96,3 +96,37 @@ https://github.com/[你的用户名]/luci-app-openvpn-admin
 
 ## 许可证
 采用GPL-3.0仅需遵守版许可证协议
+
+
+luci-app-openvpn-admin/
+├── Makefile
+├── README.md
+├── LICENSE
+├── .github/
+│   └── workflows/
+│       └── build.yml
+├── files/
+│   ├── etc/
+│   │   ├── config/
+│   │   │   └── openvpn-admin
+│   │   └── openvpn-admin/
+│   │       ├── generate-client.sh
+│   │       ├── client-connect-cn.sh
+│   │       ├── renewcert.sh
+│   │       └── clean-garbage.sh
+│   └── usr/
+│       └── lib/
+│           └── lua/
+│               └── luci/
+│                   ├── controller/
+│                   │   └── openvpn-admin.lua
+│                   └── view/
+│                       └── openvpn-admin/
+│                           ├── client.htm
+│                           ├── logs.htm
+│                           ├── server.htm
+│                           ├── settings.htm
+│                           └── status.htm
+└── package/
+    └── luci-app-openvpn-admin/
+        └── Makefile
