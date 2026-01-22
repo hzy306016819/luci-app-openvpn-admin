@@ -1,0 +1,22 @@
+# Build artifacts
+*.ipk
+*.opkg
+*.deb
+*.rpm
+/tmp/
+/build/
+/openwrt-sdk/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Local configs
+*.local
+.env
