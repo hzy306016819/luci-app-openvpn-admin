@@ -1,0 +1,661 @@
+<%+header%>
+
+<%
+local dsp = require "luci.dispatcher"
+
+-- 从openvpn-admin.lua模块获取配置
+local openvpn_admin = require "luci.controller.openvpn-admin"
+local config = openvpn_admin.get_admin_config()
+local util = require "luci.util"
+%>
+
+<div class="cbi-map" id="cbi-openvpn-settings">
+    <!-- 页面标题 -->
+    <h2 name="content"><%:OpenVPN管理设置%></h2>
+    
+    <!-- 页面说明 -->
+    <div class="info-box">
+        <p><strong><%:功能说明%>:</strong></p>
+        <p><%:在此配置OpenVPN管理界面的行为设置。OpenVPN服务配置仍然从/etc/config/openvpn读取。%></p>
+    </div>
+    
+    <!-- 配置表单 -->
+    <form class="cbi-map" method="post" action="<%=dsp.build_url('admin/vpn/openvpn-admin/save_admin_config')%>">
+        <!-- 基本设置 -->
+        <div class="cbi-section">
+            <h3><%:基本设置%></h3>
+            <div class="cbi-section-node">
+                <!-- OpenVPN实例名称 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="openvpn_instance">OpenVPN实例名称</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="text" class="cbi-input-text" id="openvpn_instance" 
+                                   name="openvpn_instance" value="<%=config.openvpn_instance or 'myvpn'%>" />
+                            <span class="input-description">OpenVPN配置中的实例名称，默认为myvpn</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- OpenVPN配置文件路径 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="openvpn_config_path">OpenVPN配置文件路径</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="text" class="cbi-input-text" id="openvpn_config_path" 
+                                   name="openvpn_config_path" value="<%=config.openvpn_config_path or '/etc/config/openvpn'%>" />
+                            <span class="input-description">OpenVPN主配置文件路径</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 状态页面设置 -->
+        <div class="cbi-section">
+            <h3><%:状态页面设置%></h3>
+            <div class="cbi-section-node">
+                <!-- 自动刷新开关 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="refresh_enabled">启用自动刷新</label>
+                    <div class="cbi-value-field">
+                        <div class="cbi-input-checkbox">
+                            <input type="checkbox" class="cbi-input-checkbox" id="refresh_enabled" 
+                                   name="refresh_enabled" value="1" <%=config.refresh_enabled and "checked='checked'" or ""%> />
+                            <label for="refresh_enabled"></label>
+                            <input type="hidden" name="refresh_enabled_old" value="<%=config.refresh_enabled and "1" or "0"%>">
+                        </div>
+                        <span class="input-description">启用状态页面的自动刷新功能</span>
+                    </div>
+                </div>
+                
+                <!-- 刷新间隔 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="refresh_interval">自动刷新间隔（秒）</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="number" class="cbi-input-text" id="refresh_interval" 
+                                   name="refresh_interval" min="1" max="300" 
+                                   value="<%=config.refresh_interval or 1%>" />
+                            <span class="input-description">状态页面自动刷新的间隔时间，1-300秒</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 历史记录行数 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="history_size">连接历史记录行数</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="number" class="cbi-input-text" id="history_size" 
+                                   name="history_size" min="5" max="100" 
+                                   value="<%=config.history_size or 20%>" />
+                            <span class="input-description">显示最近连接记录的数量，5-100条</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 日志页面设置 -->
+        <div class="cbi-section">
+            <h3><%:日志页面设置%></h3>
+            <div class="cbi-section-node">
+                <!-- 日志自动刷新开关 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="logs_refresh_enabled">启用日志自动刷新</label>
+                    <div class="cbi-value-field">
+                        <div class="cbi-input-checkbox">
+                            <input type="checkbox" class="cbi-input-checkbox" id="logs_refresh_enabled" 
+                                   name="logs_refresh_enabled" value="1" <%=config.logs_refresh_enabled and "checked='checked'" or ""%> />
+                            <label for="logs_refresh_enabled"></label>
+                            <input type="hidden" name="logs_refresh_enabled_old" value="<%=config.logs_refresh_enabled and "1" or "0"%>">
+                        </div>
+                        <span class="input-description">启用日志页面的自动刷新功能</span>
+                    </div>
+                </div>
+                
+                <!-- 日志刷新间隔 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="logs_refresh_interval">日志刷新间隔（秒）</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="number" class="cbi-input-text" id="logs_refresh_interval" 
+                                   name="logs_refresh_interval" min="1" max="300" 
+                                   value="<%=config.logs_refresh_interval or 10%>" />
+                            <span class="input-description">日志页面自动刷新的间隔时间，1-300秒</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 日志显示行数 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="logs_display_lines">日志显示行数</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="number" class="cbi-input-text" id="logs_display_lines" 
+                                   name="logs_display_lines" min="10" max="10000" 
+                                   value="<%=config.logs_display_lines or 100%>" />
+                            <span class="input-description">日志页面显示的日志行数，10-10000行</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 黑名单设置 -->
+        <div class="cbi-section">
+            <h3><%:黑名单设置%></h3>
+            <div class="cbi-section-node">
+                <!-- 黑名单开关 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="blacklist_enabled">启用黑名单功能</label>
+                    <div class="cbi-value-field">
+                        <div class="cbi-input-checkbox">
+                            <input type="checkbox" class="cbi-input-checkbox" id="blacklist_enabled" 
+                                   name="blacklist_enabled" value="1" <%=config.blacklist_enabled and "checked='checked'" or ""%> />
+                            <label for="blacklist_enabled"></label>
+                            <input type="hidden" name="blacklist_enabled_old" value="<%=config.blacklist_enabled and "1" or "0"%>">
+                        </div>
+                        <span class="input-description">启用客户端黑名单功能</span>
+                    </div>
+                </div>
+                
+                <!-- 黑名单时长 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="blacklist_duration">默认黑名单时长（秒）</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="number" class="cbi-input-text" id="blacklist_duration" 
+                                   name="blacklist_duration" min="60" max="31536000" 
+                                   value="<%=config.blacklist_duration or 300%>" />
+                            <span class="input-description">断开客户端后默认加入黑名单的时长</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 黑名单文件路径 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="blacklist_file">黑名单文件路径</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="text" class="cbi-input-text" id="blacklist_file" 
+                                   name="blacklist_file" value="<%=config.blacklist_file or '/etc/openvpn-admin/blacklist.json'%>" />
+                            <span class="input-description">黑名单数据存储文件路径</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 文件路径设置 -->
+        <div class="cbi-section">
+            <h3><%:文件路径设置%></h3>
+            <div class="cbi-section-node">
+                <!-- 日志文件路径 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="log_file">OpenVPN日志文件路径</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="text" class="cbi-input-text" id="log_file" 
+                                   name="log_file" value="<%=config.log_file or '/tmp/openvpn.log'%>" />
+                            <span class="input-description">OpenVPN服务器日志文件路径</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 历史文件路径 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="history_file">连接历史文件路径</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="text" class="cbi-input-text" id="history_file" 
+                                   name="history_file" value="<%=config.history_file or '/etc/openvpn-admin/openvpn_connection_history.json'%>" />
+                            <span class="input-description">连接历史数据存储文件路径</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- EasyRSA路径 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="easyrsa_dir">EasyRSA目录路径</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="text" class="cbi-input-text" id="easyrsa_dir" 
+                                   name="easyrsa_dir" value="<%=config.easyrsa_dir or '/etc/easy-rsa'%>" />
+                            <span class="input-description">EasyRSA工具目录路径</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- EasyRSA PKI路径 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="easyrsa_pki">EasyRSA PKI路径</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="text" class="cbi-input-text" id="easyrsa_pki" 
+                                   name="easyrsa_pki" value="<%=config.easyrsa_pki or '/etc/easy-rsa/pki'%>" />
+                            <span class="input-description">EasyRSA PKI证书存储路径</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- OpenVPN PKI路径 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="openvpn_pki">OpenVPN PKI路径</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="text" class="cbi-input-text" id="openvpn_pki" 
+                                   name="openvpn_pki" value="<%=config.openvpn_pki or '/etc/openvpn/pki'%>" />
+                            <span class="input-description">OpenVPN证书存储路径</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 服务器模板路径 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="server_template_path">服务器模板路径</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="text" class="cbi-input-text" id="server_template_path" 
+                                   name="server_template_path" value="<%=config.server_template_path or '/etc/openvpn-admin/template/server.template'%>" />
+                            <span class="input-description">服务端页面的模板文件路径</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 脚本路径设置 -->
+        <div class="cbi-section">
+            <h3><%:脚本路径设置%></h3>
+            <div class="cbi-section-node">
+                <!-- 生成客户端脚本路径 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="generate_client_script">生成客户端脚本路径</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="text" class="cbi-input-text" id="generate_client_script" 
+                                   name="generate_client_script" value="<%=config.generate_client_script or '/etc/openvpn-admin/generate-client.sh'%>" />
+                            <span class="input-description">生成客户端配置的脚本路径</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 重置证书脚本路径 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="renew_cert_script">重置证书脚本路径</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="text" class="cbi-input-text" id="renew_cert_script" 
+                                   name="renew_cert_script" value="<%=config.renew_cert_script or '/etc/openvpn-admin/renewcert.sh'%>" />
+                            <span class="input-description">重置所有证书的脚本路径</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 临时文件管理设置 -->
+        <div class="cbi-section">
+            <h3><%:临时文件管理设置%></h3>
+            <div class="cbi-section-node">
+                <!-- 启用清除垃圾文件 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="clean_garbage_enabled">启用清除垃圾文件</label>
+                    <div class="cbi-value-field">
+                        <div class="cbi-input-checkbox">
+                            <input type="checkbox" class="cbi-input-checkbox" id="clean_garbage_enabled" 
+                                   name="clean_garbage_enabled" value="1" <%=config.clean_garbage_enabled and "checked='checked'" or ""%> />
+                            <label for="clean_garbage_enabled"></label>
+                            <input type="hidden" name="clean_garbage_enabled_old" value="<%=config.clean_garbage_enabled and "1" or "0"%>">
+                        </div>
+                        <span class="input-description">启用自动清除临时目录中的垃圾文件</span>
+                    </div>
+                </div>
+                
+                <!-- 临时文件目录 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="temp_dir">临时文件目录</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="text" class="cbi-input-text" id="temp_dir" 
+                                   name="temp_dir" value="<%=config.temp_dir or '/tmp/openvpn-admin'%>" />
+                            <span class="input-description">项目产生的临时文件存放目录</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 清除垃圾文件时间 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="clean_garbage_time">清除垃圾文件时间</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="text" class="cbi-input-text" id="clean_garbage_time" 
+                                   name="clean_garbage_time" value="<%=config.clean_garbage_time or '4:50'%>" />
+                            <span class="input-description">每天清除垃圾文件的时间，格式：HH:MM</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 清除垃圾文件脚本路径 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="clean_garbage_script">清除垃圾文件脚本路径</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="text" class="cbi-input-text" id="clean_garbage_script" 
+                                   name="clean_garbage_script" value="<%=config.clean_garbage_script or '/etc/openvpn-admin/clean-garbage.sh'%>" />
+                            <span class="input-description">清除垃圾文件的脚本路径</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 操作按钮 -->
+        <div class="cbi-page-actions">
+            <input class="btn cbi-button cbi-button-apply" type="submit" value="<%:保存设置%>" />
+            <input class="btn cbi-button cbi-button-reset" type="button" value="<%:重置为默认%>" onclick="resetToDefaults()" />
+        </div>
+    </form>
+</div>
+
+<style type="text/css">
+/* 样式保持与现有界面一致 */
+.cbi-value {
+    padding: 8px 0;
+    border-bottom: 1px solid #eee;
+    display: flex;
+    align-items: center;
+    min-height: 10px;
+}
+
+.cbi-value:last-child {
+    border-bottom: none;
+}
+
+.cbi-value-title {
+    min-width: 200px;
+    padding-right: 15px;
+    font-weight: bold;
+}
+
+.cbi-value-field {
+    flex: 1;
+}
+
+.form-input-with-description {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    width: 100%;
+}
+
+.input-description {
+    color: #666;
+    font-size: 12px;
+    white-space: nowrap;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 0;
+}
+
+.cbi-input-text {
+    width: 100px;
+    min-width: 100px;
+    min-height: 15px;
+}
+
+.cbi-input-text[readonly] {
+    background-color: #f8f9fa;
+    color: #6c757d;
+    cursor: not-allowed;
+}
+
+.cbi-input-checkbox {
+    margin-right: 5px;
+}
+
+.info-box {
+    margin: -10px 0;
+    padding: 10px;
+    background-color: #f8f9fa;
+    border-radius: 3px;
+    border: 1px solid #dee2e6;
+}
+
+.cbi-section {
+    margin-bottom: -10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-top: -10px;
+}
+
+.cbi-section h3 {
+    margin: 0;
+    padding: 10px 15px;
+    background-color: #f5f5f5;
+    border-bottom: 1px solid #ddd;
+    font-size: 16px;
+}
+
+.cbi-section-descr {
+    padding: 10px 15px;
+    background-color: #f8f9fa;
+    border-bottom: 1px solid #ddd;
+    font-size: 13px;
+    color: #666;
+}
+
+.cbi-section-node {
+    padding: 15px;
+}
+
+.cbi-page-actions {
+    margin-top: 20px;
+    text-align: center;
+}
+
+.cbi-button {
+    padding: 10px 20px;
+    font-size: 14px;
+    font-weight: bold;
+    cursor: pointer;
+    border-radius: 4px;
+    border: 1px solid transparent;
+}
+
+.cbi-button-apply {
+    background-color: #007bff;
+    color: white;
+    border-color: #007bff;
+}
+
+.cbi-button-apply:hover {
+    background-color: #0056b3;
+    border-color: #0056b3;
+}
+
+.cbi-button-reset {
+    background-color: #6c757d;
+    color: white;
+    border-color: #6c757d;
+}
+
+.cbi-button-reset:hover {
+    background-color: #5a6268;
+    border-color: #545b62;
+}
+
+/* 深色模式支持 */
+body.dark-mode .cbi-value {
+    border-bottom-color: #444;
+}
+
+body.dark-mode .cbi-value-title {
+    color: #ddd;
+}
+
+body.dark-mode .input-description {
+    color: #aaa;
+}
+
+body.dark-mode .info-box {
+    background-color: #2d2d2d;
+    border-color: #444;
+    color: #ddd;
+}
+
+body.dark-mode .cbi-section {
+    border-color: #444;
+}
+
+body.dark-mode .cbi-section h3 {
+    background-color: #3d3d3d;
+    border-bottom-color: #444;
+    color: #ddd;
+}
+
+body.dark-mode .cbi-section-descr {
+    background-color: #2d2d2d;
+    border-bottom-color: #444;
+    color: #aaa;
+}
+
+body.dark-mode .cbi-input-text {
+    background-color: #333;
+    color: #ddd;
+    border-color: #555;
+}
+
+body.dark-mode .cbi-input-text[readonly] {
+    background-color: #2d2d2d;
+    color: #888;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+    .form-input-with-description {
+        flex-wrap: wrap;
+        gap: 5px;
+    }
+    
+    .cbi-input-text {
+        width: 100%;
+        min-width: auto;
+    }
+    
+    .input-description {
+        white-space: normal;
+        max-width: 100%;
+        padding-left: 5px;
+    }
+    
+    .cbi-value-title {
+        min-width: 150px;
+    }
+}
+</style>
+
+<script type="text/javascript">
+//<![CDATA[
+// 重置为默认值
+function resetToDefaults() {
+    if (confirm('确认要重置所有设置为默认值吗？')) {
+        // 基本设置
+        document.getElementById('openvpn_instance').value = 'myvpn';
+        document.getElementById('openvpn_config_path').value = '/etc/config/openvpn';
+        
+        // 状态页面设置
+        document.getElementById('refresh_enabled').checked = true;
+        document.getElementById('refresh_interval').value = '1';
+        document.getElementById('history_size').value = '20';
+        
+        // 日志页面设置
+        document.getElementById('logs_refresh_enabled').checked = true;
+        document.getElementById('logs_refresh_interval').value = '10';
+        document.getElementById('logs_display_lines').value = '1000';
+        
+        // 黑名单设置
+        document.getElementById('blacklist_enabled').checked = true;
+        document.getElementById('blacklist_duration').value = '300';
+        document.getElementById('blacklist_file').value = '/etc/openvpn-admin/blacklist.json';
+        
+        // 文件路径设置
+        document.getElementById('log_file').value = '/tmp/openvpn.log';
+        document.getElementById('history_file').value = '/etc/openvpn-admin/openvpn_connection_history.json';
+        document.getElementById('easyrsa_dir').value = '/etc/easy-rsa';
+        document.getElementById('easyrsa_pki').value = '/etc/easy-rsa/pki';
+        document.getElementById('openvpn_pki').value = '/etc/openvpn/pki';
+        document.getElementById('server_template_path').value = '/etc/openvpn-admin/template/server.template';
+        
+        // 脚本路径设置
+        document.getElementById('generate_client_script').value = '/etc/openvpn-admin/generate-client.sh';
+        document.getElementById('renew_cert_script').value = '/etc/openvpn-admin/renewcert.sh';
+        
+        // 临时文件管理设置
+        document.getElementById('temp_dir').value = '/tmp/openvpn-admin';
+        document.getElementById('clean_garbage_enabled').checked = true;
+        document.getElementById('clean_garbage_time').value = '4:50';
+        document.getElementById('clean_garbage_script').value = '/etc/openvpn-admin/clean-garbage.sh';
+    }
+}
+
+// 表单提交处理
+document.addEventListener('DOMContentLoaded', function() {
+    var form = document.querySelector('form');
+    if (form) {
+        form.addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            // 确保未选中的复选框也有值（值为0）
+            var checkboxes = document.querySelectorAll('input[type="checkbox"]');
+            checkboxes.forEach(function(checkbox) {
+                if (!checkbox.checked) {
+                    // 添加隐藏字段来传递未选中的值
+                    var hiddenInput = document.createElement('input');
+                    hiddenInput.type = 'hidden';
+                    hiddenInput.name = checkbox.name;
+                    hiddenInput.value = '0';
+                    form.appendChild(hiddenInput);
+                }
+            });
+            
+            if (confirm('确认要保存设置吗？')) {
+                var formData = new FormData(form);
+                
+                fetch(form.action, {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(function(response) {
+                    if (!response.ok) {
+                        throw new Error('网络响应错误: ' + response.status);
+                    }
+                    return response.json();
+                })
+                .then(function(result) {
+                    if (result.success) {
+                        alert('设置保存成功！页面将重新加载。');
+                        setTimeout(function() {
+                            location.reload();
+                        }, 1000);
+                    } else {
+                        alert('保存失败: ' + result.message);
+                    }
+                })
+                .catch(function(error) {
+                    alert('保存失败: ' + error.message);
+                });
+            }
+            
+            return false;
+        });
+    }
+});
+//]]>
+</script>
+
+<%+footer%>
