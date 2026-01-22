@@ -15,7 +15,7 @@ jobs:
           - target: mipsel_24kc
             sdk_name: ramips-mt7621
           - target: aarch64_cortex-a53
-            sdk_name: mediatek-mt7981
+            sdk_name: mediatek/mt7981
           - target: aarch64_cortex-a72
             sdk_name: rockchip-armv8
           - target: arm_cortex-a7_neon-vfpv4
@@ -23,7 +23,7 @@ jobs:
     
     steps:
     - name: 1检出代码
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         fetch-depth: 0
         show-progress: true
@@ -235,7 +235,7 @@ jobs:
         fi
     
     - name: 9上传构建产物
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: luci-app-openvpn-admin-${{ matrix.target }}
         path: luci-app-openvpn-admin-${{ matrix.target }}.ipk
