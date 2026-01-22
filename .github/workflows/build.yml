@@ -22,12 +22,40 @@ jobs:
             sdk_name: sunxi-cortexa7
     
     steps:
-    - name: Checkout code
+    - name: 1检出代码
       uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        show-progress: true
+      timeout-minutes: 5
     
-    - name: Setup Build Environment
+    - name: 2显示仓库结构
       run: |
+        echo "📁 当前仓库结构："
+        echo "========================================"
+        find . -maxdepth 3 -type f -name "*.mk" -o -name "*.lua" -o -name "*.htm" -o -name "*.sh" | sort
+        echo "========================================"
+        echo ""
+        echo "📦 检查包目录："
+        if [ -d "package/luci-app-openvpn-admin" ]; then
+          echo "✅ 找到 package/luci-app-openvpn-admin 目录"
+          ls -la package/luci-app-openvpn-admin/
+          echo ""
+          if [ -f "package/luci-app-openvpn-admin/Makefile" ]; then
+            echo "✅ 找到 Makefile 文件"
+            head -20 package/luci-app-openvpn-admin/Makefile
+          else
+            echo "❌ 未找到 Makefile 文件"
+          fi
+        else
+          echo "❌ 未找到 package/luci-app-openvpn-admin 目录"
+        fi
+    
+    - name: 3设置构建环境
+      run: |
+        echo "🛠️ 安装构建依赖包..."
         sudo apt-get update
+        echo "安装的软件包："
         sudo apt-get install -y \
           build-essential \
           libncurses5-dev \
@@ -42,98 +70,199 @@ jobs:
           wget \
           unzip \
           python3 \
-          python3-setuptools
+          python3-setuptools 2>&1 | grep -E "Installing|Setting up|is already"
+        echo "✅ 构建环境设置完成"
     
-    - name: Determine SDK URL
+    - name: 4确定SDK下载地址
+      id: sdk_info
       run: |
+        echo "🔍 确定 ${{ matrix.target }} 架构的SDK地址..."
         case "${{ matrix.target }}" in
           x86_64)
-            echo "SDK_URL=https://downloads.openwrt.org/snapshots/targets/x86/64/openwrt-sdk-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz" >> $GITHUB_ENV
+            SDK_URL="https://downloads.openwrt.org/snapshots/targets/x86/64/openwrt-sdk-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+            echo "📦 架构: x86_64"
+            echo "🔗 SDK: $SDK_URL"
             ;;
           mipsel_24kc)
-            echo "SDK_URL=https://downloads.openwrt.org/snapshots/targets/ramips/mt7621/openwrt-sdk-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz" >> $GITHUB_ENV
+            SDK_URL="https://downloads.openwrt.org/snapshots/targets/ramips/mt7621/openwrt-sdk-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+            echo "📦 架构: mipsel_24kc"
+            echo "🔗 SDK: $SDK_URL"
             ;;
           aarch64_cortex-a53)
-            echo "SDK_URL=https://downloads.openwrt.org/snapshots/targets/mediatek/mt7981/openwrt-sdk-mediatek-mt7981_gcc-12.3.0_musl.Linux-x86_64.tar.xz" >> $GITHUB_ENV
+            SDK_URL="https://downloads.openwrt.org/snapshots/targets/mediatek/mt7981/openwrt-sdk-mediatek-mt7981_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+            echo "📦 架构: aarch64_cortex-a53"
+            echo "🔗 SDK: $SDK_URL"
             ;;
           aarch64_cortex-a72)
-            echo "SDK_URL=https://downloads.openwrt.org/snapshots/targets/rockchip/armv8/openwrt-sdk-rockchip-armv8_gcc-12.3.0_musl.Linux-x86_64.tar.xz" >> $GITHUB_ENV
+            SDK_URL="https://downloads.openwrt.org/snapshots/targets/rockchip/armv8/openwrt-sdk-rockchip-armv8_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+            echo "📦 架构: aarch64_cortex-a72"
+            echo "🔗 SDK: $SDK_URL"
             ;;
           arm_cortex-a7_neon-vfpv4)
-            echo "SDK_URL=https://downloads.openwrt.org/snapshots/targets/sunxi/cortexa7/openwrt-sdk-sunxi-cortexa7_gcc-12.3.0_musl.Linux-x86_64.tar.xz" >> $GITHUB_ENV
+            SDK_URL="https://downloads.openwrt.org/snapshots/targets/sunxi/cortexa7/openwrt-sdk-sunxi-cortexa7_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+            echo "📦 架构: arm_cortex-a7_neon-vfpv4"
+            echo "🔗 SDK: $SDK_URL"
             ;;
         esac
+        echo "SDK_URL=$SDK_URL" >> $GITHUB_ENV
+        echo "✅ SDK地址确定完成"
     
-    - name: Download OpenWrt SDK
+    - name: 5下载OpenWrt SDK
+      timeout-minutes: 10
       run: |
-        wget -q "${{ env.SDK_URL }}" -O openwrt-sdk.tar.xz
-        tar -xf openwrt-sdk.tar.xz
-        mv openwrt-sdk-* openwrt-sdk
+        echo "⬇️ 下载 ${{ matrix.target }} 架构的 SDK..."
+        echo "下载地址: ${{ env.SDK_URL }}"
+        wget --progress=dot:giga "${{ env.SDK_URL }}" -O openwrt-sdk.tar.xz
+        DOWNLOAD_SIZE=$(stat -c%s openwrt-sdk.tar.xz 2>/dev/null || wc -c < openwrt-sdk.tar.xz)
+        echo "✅ SDK 下载完成，大小: $((DOWNLOAD_SIZE/1024/1024))MB"
+        
+        echo "📦 解压 SDK..."
+        tar -xvf openwrt-sdk.tar.xz
+        SDK_DIR=$(find . -maxdepth 1 -name "openwrt-sdk-*" -type d)
+        mv "$SDK_DIR" openwrt-sdk
+        echo "✅ SDK 解压完成，目录: openwrt-sdk"
+        
+        echo "📁 SDK 目录结构:"
+        ls -la openwrt-sdk/
     
-    - name: Prepare package files
+    - name: 6准备包文件
       run: |
-        echo "复制包文件到 SDK 中..."
-        cd openwrt-sdk
+        echo "📋 准备包文件..."
+        echo "当前工作目录: $(pwd)"
+        echo ""
         
-        # 创建包目录
-        mkdir -p package/luci-app-openvpn-admin
-        
-        # 复制整个包目录（包括 Makefile 和其他文件）
-        cp -r ../package/luci-app-openvpn-admin/* package/luci-app-openvpn-admin/
-        
-        # 复制 files 目录（如果存在）
-        if [ -d "../files" ]; then
-          cp -r ../files/* package/luci-app-openvpn-admin/
+        # 检查源文件
+        echo "📁 源文件检查:"
+        if [ -d "package/luci-app-openvpn-admin" ]; then
+          echo "✅ 找到 package/luci-app-openvpn-admin"
+          echo "   包含文件:"
+          ls -la package/luci-app-openvpn-admin/
+        else
+          echo "❌ 未找到 package/luci-app-openvpn-admin"
+          exit 1
         fi
         
-        echo "验证文件结构..."
-        find package/luci-app-openvpn-admin -type f | head -20
-    
-    - name: Build Package
-      run: |
+        if [ -d "files" ]; then
+          echo "✅ 找到 files 目录"
+          echo "   包含文件:"
+          find files -type f | head -10
+        else
+          echo "⚠️  未找到 files 目录"
+        fi
+        
+        # 复制文件到 SDK
+        echo ""
+        echo "🔄 复制文件到 SDK..."
         cd openwrt-sdk
-        echo "开始构建 ${{ matrix.target }} 架构..."
+        echo "当前目录: $(pwd)"
         
-        # 配置
-        make defconfig
+        mkdir -p package/luci-app-openvpn-admin
+        echo "📂 复制包文件..."
+        cp -rv ../package/luci-app-openvpn-admin/* package/luci-app-openvpn-admin/
         
-        # 编译包
-        make package/luci-app-openvpn-admin/compile V=sc
+        if [ -d "../files" ]; then
+          echo "📂 复制 files 目录..."
+          cp -rv ../files/* package/luci-app-openvpn-admin/
+        fi
         
-        # 查找生成的 IPK 文件
-        echo "查找生成的 IPK 文件..."
-        find bin -name "luci-app-openvpn-admin*.ipk" -type f
+        # 验证复制结果
+        echo ""
+        echo "✅ 文件复制完成，验证结果:"
+        echo "📁 包目录结构:"
+        find package/luci-app-openvpn-admin -type f | sort
         
-        # 复制 IPK 文件
-        for ipk in $(find bin -name "luci-app-openvpn-admin*.ipk" -type f); do
-          echo "复制: $ipk"
-          cp "$ipk" ../luci-app-openvpn-admin-${{ matrix.target }}.ipk
-          break
-        done
+        echo ""
+        echo "📄 Makefile 内容预览:"
+        head -30 package/luci-app-openvpn-admin/Makefile 2>/dev/null || echo "未找到 Makefile"
     
-    - name: Upload Artifact
+    - name: 7构建包
+      timeout-minutes: 30
+      run: |
+        echo "🔨 开始构建 ${{ matrix.target }} 架构的包..."
+        echo "当前目录: $(pwd)"
+        cd openwrt-sdk
+        
+        echo ""
+        echo "🔧 配置构建环境..."
+        make defconfig 2>&1 | tail -20
+        
+        echo ""
+        echo "🚀 编译 luci-app-openvpn-admin..."
+        echo "========================================"
+        make package/luci-app-openvpn-admin/compile V=s 2>&1 | tee build.log | grep -E "(CC|CXX|LD|INSTALL|Creating|Error|error|Warning|warning)" || true
+        echo "========================================"
+        
+        # 检查构建结果
+        BUILD_STATUS=$?
+        echo ""
+        echo "📊 构建状态: $BUILD_STATUS"
+        
+        if [ $BUILD_STATUS -eq 0 ]; then
+          echo "✅ 构建成功!"
+        else
+          echo "❌ 构建失败!"
+          echo "最后10行错误信息:"
+          tail -20 build.log || true
+        fi
+    
+    - name: 8查找并复制IPK文件
+      run: |
+        echo "🔍 查找生成的IPK文件..."
+        cd openwrt-sdk
+        
+        # 在多个可能的位置查找
+        echo "搜索目录:"
+        find . -name "*.ipk" -type f 2>/dev/null | grep -i openvpn | head -10
+        
+        IPK_FILES=$(find . -name "luci-app-openvpn-admin*.ipk" -type f)
+        if [ -n "$IPK_FILES" ]; then
+          echo "✅ 找到IPK文件:"
+          echo "$IPK_FILES"
+          
+          # 复制第一个找到的文件
+          FIRST_IPK=$(echo "$IPK_FILES" | head -1)
+          echo "📋 复制文件: $FIRST_IPK"
+          cp "$FIRST_IPK" ../luci-app-openvpn-admin-${{ matrix.target }}.ipk
+          
+          echo "📊 文件信息:"
+          ls -lh ../luci-app-openvpn-admin-${{ matrix.target }}.ipk
+        else
+          echo "❌ 未找到IPK文件"
+          echo "可能的位置:"
+          find bin -name "*.ipk" -type f 2>/dev/null || true
+          find packages -name "*.ipk" -type f 2>/dev/null || true
+          exit 1
+        fi
+    
+    - name: 9上传构建产物
       uses: actions/upload-artifact@v3
       with:
         name: luci-app-openvpn-admin-${{ matrix.target }}
         path: luci-app-openvpn-admin-${{ matrix.target }}.ipk
         retention-days: 30
+        if-no-files-found: error
     
-    - name: Show Download Instructions
+    - name: 🔟 显示构建摘要
+      if: always()
       run: |
-        echo "=============================================="
-        echo "✨ 构建完成！下载说明 ✨"
-        echo "=============================================="
         echo ""
-        echo "📥 下载编译好的 IPK 文件："
+        echo "========================================"
+        echo "🏁 构建完成 - ${{ matrix.target }}"
+        echo "========================================"
         echo ""
-        echo "1. 📂 GitHub Actions Artifacts"
-        echo "   点击当前运行的工作流页面右侧的 'Artifacts'"
-        echo "   找到 'luci-app-openvpn-admin-${{ matrix.target }}'"
-        echo "   点击下载按钮即可下载"
+        echo "📋 构建信息:"
+        echo "   架构: ${{ matrix.target }}"
+        echo "   运行ID: ${{ github.run_id }}"
+        echo "   运行号: ${{ github.run_number }}"
         echo ""
-        echo "2. 🤖 安装到 OpenWrt"
-        echo "   scp luci-app-openvpn-admin-${{ matrix.target }}.ipk root@路由器IP:/tmp/"
-        echo "   ssh root@路由器IP 'opkg install /tmp/luci-app-openvpn-admin-${{ matrix.target }}.ipk'"
+        echo "📥 下载方式:"
+        echo "   1. 在右侧 Artifacts 中下载"
+        echo "   2. 文件名: luci-app-openvpn-admin-${{ matrix.target }}.ipk"
         echo ""
-        echo "📦 本次构建架构: ${{ matrix.target }}"
-        echo "=============================================="
+        echo "🔗 永久链接:"
+        echo "   https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        echo ""
+        echo "🤖 安装命令:"
+        echo "   scp luci-app-openvpn-admin-${{ matrix.target }}.ipk root@192.168.1.1:/tmp/"
+        echo "   opkg install /tmp/luci-app-openvpn-admin-${{ matrix.target }}.ipk"
+        echo "========================================"
