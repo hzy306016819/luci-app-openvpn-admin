@@ -10,18 +10,17 @@ jobs:
     
     strategy:
       matrix:
-        target: ["x86_64", "mipsel_24kc", "aarch64_generic", "aarch64_cortex-a72", "arm_cortex-a7_neon-vfpv4"]
+        # 仅保留 360T7 和 x86_64 架构
+        target: ["x86_64", "aarch64_cortex-a72"]
         include:
           - target: x86_64
             sdk_name: x86-64
-          - target: mipsel_24kc
-            sdk_name: ramips-mt7621
-          - target: aarch64_generic
-            sdk_name: armvirt-64
+            # ImmortalWrt 23.05.0 SDK 路径
+            sdk_subpath: targets/x86/64/immortalwrt-sdk-23.05.0-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
           - target: aarch64_cortex-a72
             sdk_name: rockchip-armv8
-          - target: arm_cortex-a7_neon-vfpv4
-            sdk_name: sunxi-cortexa7
+            # 360T7 属于 rockchip-armv8 架构
+            sdk_subpath: targets/rockchip/armv8/immortalwrt-sdk-23.05.0-rockchip-armv8_gcc-12.3.0_musl.Linux-x86_64.tar.xz
     
     steps:
     - name: 1检出代码
@@ -39,43 +38,24 @@ jobs:
           unzip \
           python3 \
           python3-pip \
-          file
+          file \
+          rsync \
+          curl
     
-    - name: 3下载SDK（带重试）
+    - name: 3下载ImmortalWrt SDK（带重试）
       id: download_sdk
-      continue-on-error: true
       run: |
         echo "下载 ${{ matrix.target }} 架构的SDK..."
         
-        # 使用不同的镜像源
+        # 稳定的 ImmortalWrt 镜像源
         MIRRORS=(
-          "https://downloads.openwrt.org/releases/22.03.5"
-          "https://mirror2.openwrt.org/releases/22.03.5"
-          "https://mirrors.cloud.tencent.com/openwrt/releases/22.03.5"
+          "https://downloads.immortalwrt.org/releases/23.05.0"
+          "https://mirrors.pku.edu.cn/immortalwrt/releases/23.05.0"
         )
-        
-        # 根据目标选择SDK
-        case "${{ matrix.target }}" in
-          x86_64)
-            SDK_PATH="targets/x86/64/openwrt-sdk-22.03.5-x86-64_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
-            ;;
-          mipsel_24kc)
-            SDK_PATH="targets/ramips/mt7621/openwrt-sdk-22.03.5-ramips-mt7621_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
-            ;;
-          aarch64_generic)
-            SDK_PATH="targets/armvirt/64/openwrt-sdk-22.03.5-armvirt-64_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
-            ;;
-          aarch64_cortex-a72)
-            SDK_PATH="targets/rockchip/armv8/openwrt-sdk-22.03.5-rockchip-armv8_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
-            ;;
-          arm_cortex-a7_neon-vfpv4)
-            SDK_PATH="targets/sunxi/cortexa7/openwrt-sdk-22.03.5-sunxi-cortexa7_gcc-11.2.0_musl.Linux-x86_64.tar.xz"
-            ;;
-        esac
         
         # 尝试从不同镜像下载
         for MIRROR in "${MIRRORS[@]}"; do
-          SDK_URL="${MIRROR}/${SDK_PATH}"
+          SDK_URL="${MIRROR}/${{ matrix.sdk_subpath }}"
           echo "尝试从: $SDK_URL"
           if wget --timeout=30 --tries=3 "$SDK_URL" -O openwrt-sdk.tar.xz; then
             echo "✅ 下载成功"
@@ -94,7 +74,7 @@ jobs:
         
         echo "解压SDK..."
         tar -xf openwrt-sdk.tar.xz
-        mv openwrt-sdk-* openwrt-sdk
+        mv immortalwrt-sdk-* openwrt-sdk
     
     - name: 4准备包文件
       run: |
@@ -104,7 +84,7 @@ jobs:
         # 创建包目录
         mkdir -p package/luci-app-openvpn-admin
         
-        # 复制现有文件
+        # 复制插件文件
         if [ -d "../package/luci-app-openvpn-admin" ]; then
           cp -r ../package/luci-app-openvpn-admin/* package/luci-app-openvpn-admin/
         fi
@@ -113,7 +93,7 @@ jobs:
           cp -r ../files/* package/luci-app-openvpn-admin/
         fi
         
-        # 检查文件
+        # 检查文件结构
         echo "检查文件结构:"
         find package/luci-app-openvpn-admin -type f | head -20
     
@@ -122,14 +102,17 @@ jobs:
         cd openwrt-sdk
         echo "配置构建环境..."
         
-        # 创建默认配置
+        # 生成配置文件
         cat > .config << EOF
         CONFIG_TARGET_${{ matrix.sdk_name }}=y
         CONFIG_PACKAGE_luci-app-openvpn-admin=y
         EOF
         
-        echo "开始构建..."
-        # 只编译指定的包
+        # 更新feeds并解决依赖
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+        
+        echo "开始构建插件..."
         make package/luci-app-openvpn-admin/compile V=s 2>&1 | tail -50
     
     - name: 6查找IPK文件
@@ -137,31 +120,20 @@ jobs:
         cd openwrt-sdk
         echo "查找生成的IPK文件..."
         
-        # 在不同位置查找
-        for dir in bin packages bin/packages; do
-          if [ -d "$dir" ]; then
-            IPK_FILE=$(find "$dir" -name "luci-app-openvpn-admin*.ipk" -type f | head -1)
-            if [ -n "$IPK_FILE" ]; then
-              echo "找到: $IPK_FILE"
-              cp "$IPK_FILE" ../luci-app-openvpn-admin-${{ matrix.target }}.ipk
-              break
-            fi
-          fi
-        done
-        
-        # 检查是否找到文件
-        if [ -f "../luci-app-openvpn-admin-${{ matrix.target }}.ipk" ]; then
-          echo "✅ IPK文件复制成功"
-          ls -lh ../luci-app-openvpn-admin-${{ matrix.target }}.ipk
+        IPK_FILE=$(find bin/packages -name "luci-app-openvpn-admin*.ipk" -type f | head -1)
+        if [ -n "$IPK_FILE" ]; then
+          echo "找到: $IPK_FILE"
+          cp "$IPK_FILE" ../luci-app-openvpn-admin-${{ matrix.target }}.ipk
         else
           echo "❌ 未找到IPK文件"
-          # 列出所有IPK文件帮助调试
           find . -name "*.ipk" -type f | head -20
+          exit 1
         fi
+        
+        ls -lh ../luci-app-openvpn-admin-${{ matrix.target }}.ipk
     
     - name: 7上传产物
       uses: actions/upload-artifact@v4
-      if: success()
       with:
         name: openvpn-admin-${{ matrix.target }}
         path: luci-app-openvpn-admin-${{ matrix.target }}.ipk
@@ -179,7 +151,6 @@ jobs:
         
         if [ -f "luci-app-openvpn-admin-${{ matrix.target }}.ipk" ]; then
           echo "✅ 构建成功!"
-          echo "文件: luci-app-openvpn-admin-${{ matrix.target }}.ipk"
         else
           echo "❌ 构建失败或文件未生成"
         fi
