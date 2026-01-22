@@ -1,48 +1,83 @@
 name: Build luci-app-openvpn-admin
 
 on:
-  push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-  release:
-    types: [published]
+  # 手动触发工作流
   workflow_dispatch:
     inputs:
-      target_arch:
-        description: 'Target architectures (comma separated)'
-        required: false
-        default: 'x86_64,aarch64_cortex-a53'
-      build_type:
-        description: 'Build type'
+      target:
+        description: '选择要构建的目标架构'
         required: false
         default: 'all'
         type: choice
         options:
           - all
-          - x86_only
-          - mt7981_only
+          - x86_64
+          - aarch64_cortex-a53
+          - aarch64_cortex-a72
+          - arm_cortex-a7_neon-vfpv4
+          - mipsel_24kc
+      clean_build:
+        description: '是否清理构建缓存'
+        required: false
+        default: false
+        type: boolean
+      upload_release:
+        description: '是否上传到 Release'
+        required: false
+        default: false
+        type: boolean
+  
+  # 发布版本时自动构建
+  release:
+    types: [published]
+  
+  # 可以保留 push 到特定分支，但注释掉（可选）
+  # push:
+  #   branches:
+  #     - 'build/**'  # 只有 push 到 build/ 开头的分支才触发
+  #     - 'releases/**'
+  
+  # pull_request:
+  #   branches: [ main, master ]
+  #   paths-ignore:  # 忽略某些文件的变更
+  #     - '**/*.md'
+  #     - '**/*.txt'
+  #     - '**/.gitignore'
+  #     - '**/.gitattributes'
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     strategy:
       matrix:
-        # 如果有输入参数，使用输入参数，否则使用默认值
-         target: ${{ fromJSON(github.event.inputs.target_arch || '["x86_64", "aarch64_cortex-a53"]') }}
+        target: ${{ fromJSON(
+          inputs.target == 'all' 
+            ? '["x86_64", "mipsel_24kc", "aarch64_cortex-a53", "aarch64_cortex-a72", "arm_cortex-a7_neon-vfpv4"]'
+            : format('["{0}"]', inputs.target)
+        ) }}
+        
         include:
           - target: x86_64
             device: x86/64
             sdk_name: x86-64
-            sdk_url: https://downloads.openwrt.org/snapshots/targets/x86/64/openwrt-sdk-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+          - target: mipsel_24kc
+            device: ramips/mt7621
+            sdk_name: ramips-mt7621
           - target: aarch64_cortex-a53
-            device: mediatek/mt7981  # 360T7
-            sdk_name: mediatek-mt7981
-            sdk_url: https://downloads.openwrt.org/snapshots/targets/mediatek/mt7981/openwrt-sdk-mediatek-mt7981_gcc-12.3.0_musl.Linux-x86_64.tar.xz
+            device: mediatek/mt7981
+            sdk_name: mediatek/mt7981
+          - target: aarch64_cortex-a72
+            device: rockchip/armv8
+            sdk_name: rockchip-armv8
+          - target: arm_cortex-a7_neon-vfpv4
+            device: sunxi/cortexa7
+            sdk_name: sunxi-cortexa7
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
     
     - name: Setup Build Environment
       run: |
@@ -64,40 +99,66 @@ jobs:
           python3-setuptools
         echo "Build environment setup completed"
     
-    - name: Download OpenWrt SDK for ${{ matrix.target }}
+    - name: Clean build cache (if requested)
+      if: ${{ inputs.clean_build }}
       run: |
-        echo "Downloading SDK for ${{ matrix.target }}"
-        
-        # 根据目标架构选择 SDK URL
+        echo "清理构建缓存..."
+        sudo rm -rf /tmp/openwrt-sdk-* || true
+        sudo rm -rf /tmp/*.tar.xz || true
+    
+    - name: Determine SDK URL
+      id: sdk_url
+      run: |
         case "${{ matrix.target }}" in
           x86_64)
             SDK_URL="https://downloads.openwrt.org/snapshots/targets/x86/64/openwrt-sdk-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
             ;;
+          mipsel_24kc)
+            SDK_URL="https://downloads.openwrt.org/snapshots/targets/ramips/mt7621/openwrt-sdk-ramips-mt7621_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+            ;;
           aarch64_cortex-a53)
             SDK_URL="https://downloads.openwrt.org/snapshots/targets/mediatek/mt7981/openwrt-sdk-mediatek-mt7981_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+            ;;
+          aarch64_cortex-a72)
+            SDK_URL="https://downloads.openwrt.org/snapshots/targets/rockchip/armv8/openwrt-sdk-rockchip-armv8_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+            ;;
+          arm_cortex-a7_neon-vfpv4)
+            SDK_URL="https://downloads.openwrt.org/snapshots/targets/sunxi/cortexa7/openwrt-sdk-sunxi-cortexa7_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
             ;;
           *)
             echo "Unsupported target: ${{ matrix.target }}"
             exit 1
             ;;
         esac
-        
-        echo "Downloading SDK from: $SDK_URL"
-        wget -q "$SDK_URL" -O openvpn-sdk.tar.xz
-        tar -xf openvpn-sdk.tar.xz
-        mv openwrt-sdk-* openwrt-sdk
-        echo "SDK downloaded and extracted"
+        echo "SDK_URL=$SDK_URL" >> $GITHUB_ENV
+        echo "sdk_url=$SDK_URL" >> $GITHUB_OUTPUT
     
-    - name: Prepare Build Files
+    - name: Download OpenWrt SDK
       run: |
-        echo "准备构建文件..."
+        echo "下载 ${{ matrix.target }} 架构的 SDK..."
+        wget -q "${{ env.SDK_URL }}" -O openwrt-sdk.tar.xz
+        tar -xf openwrt-sdk.tar.xz
+        mv openwrt-sdk-* openwrt-sdk
+        echo "SDK 下载并解压完成"
+        ls -la openwrt-sdk/
+    
+    - name: Prepare package files
+      run: |
+        echo "准备包文件..."
         cd openwrt-sdk
+        
+        # 创建包目录
         mkdir -p package/luci-app-openvpn-admin
         
-        # 复制文件到 SDK
-        cp -r ../files package/luci-app-openvpn-admin/
+        # 复制文件
+        echo "复制安装文件..."
+        cp -r ../files/* package/luci-app-openvpn-admin/
         
-        # 创建 package Makefile
+        # 验证文件结构
+        echo "文件结构:"
+        find package/luci-app-openvpn-admin/files -type f | head -20 || true
+        
+        # 创建包 Makefile
         cat > package/luci-app-openvpn-admin/Makefile << 'EOF'
         include $(TOPDIR)/rules.mk
 
@@ -114,94 +175,101 @@ jobs:
         CATEGORY:=LuCI
         SUBMENU:=3. Applications
         TITLE:=OpenVPN Management Interface
-         PKGARCH:=all
+        PKGARCH:=all
         DEPENDS:=+luci-base +openvpn-openssl +luci-lib-jsonc +easy-rsa +curl +openssl-util +netcat-openbsd
         endef
 
         define Package/$(PKG_NAME)/description
-          A comprehensive OpenVPN management interface for OpenWrt/LEDE/ImmortalWrt.
-          Features include client management, certificate generation, connection monitoring,
-          and server configuration.
+        A comprehensive OpenVPN management interface for OpenWrt/LEDE/ImmortalWrt.
+        Features include client management, certificate generation, connection monitoring,
+        and server configuration.
         endef
-
-        define Build/Prepare
-        	mkdir -p $(PKG_BUILD_DIR)
+             define Build/Prepare
+            mkdir -p $(PKG_BUILD_DIR)
         endef
 
         define Build/Configure
         endef
-
+        
         define Build/Compile
         endef
 
         define Package/$(PKG_NAME)/install
         	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
         	$(INSTALL_DATA) ./files/usr/lib/lua/luci/controller/openvpn-admin.lua \
-        		$(1)/usr/lib/lua/luci/controller/
+        	$(1)/usr/lib/lua/luci/controller/
 
-        	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view/openvpn-admin
-        	$(INSTALL_DATA) ./files/usr/lib/lua/luci/view/openvpn-admin/*.htm \
-        		$(1)/usr/lib/lua/luci/view/openvpn-admin/
+          $(INSTALL_DIR) $(1)/usr/lib/lua/luci/view/openvpn-admin
+         	$(INSTALL_DATA) ./files/usr/lib/lua/luci/view/openvpn-admin/*.htm \
+        	$(1)/usr/lib/lua/luci/view/openvpn-admin/
 
-        	$(INSTALL_DIR) $(1)/etc/config
+          $(INSTALL_DIR) $(1)/etc/config
         	$(INSTALL_DATA) ./files/etc/config/openvpn-admin \
-        		$(1)/etc/config/
-         	$(INSTALL_DIR) $(1)/etc/openvpn-admin
+        	$(1)/etc/config/
+
+        	$(INSTALL_DIR) $(1)/etc/openvpn-admin
         	$(INSTALL_BIN) ./files/etc/openvpn-admin/generate-client.sh \
-        		$(1)/etc/openvpn-admin/
+        	$(1)/etc/openvpn-admin/
         	$(INSTALL_BIN) ./files/etc/openvpn-admin/client-connect-cn.sh \
         	$(1)/etc/openvpn-admin/
         	$(INSTALL_BIN) ./files/etc/openvpn-admin/clean-garbage.sh \
-        		$(1)/etc/openvpn-admin/
+        	$(1)/etc/openvpn-admin/
         	$(INSTALL_DATA) ./files/etc/openvpn-admin/renewcert.sh \
         	$(1)/etc/openvpn-admin/
-
+ 
         	$(INSTALL_DIR) $(1)/etc/openvpn-admin/template
-        	$(INSTALL_DATA) ./files/etc/openvpn-admin/template/server.template \
-        	$(1)/etc/openvpn-admin/template/
+        	echo "config openvpn 'myvpn'" > $(1)/etc/openvpn-admin/template/server.template
+        	echo "    option enabled '1'" >> $(1)/etc/openvpn-admin/template/server.template
+        	echo "    option port '1194'" >> $(1)/etc/openvpn-admin/template/server.template
+        	echo "    option proto 'udp'" >> $(1)/etc/openvpn-admin/template/server.template
 
         	$(INSTALL_DIR) $(1)/tmp/openvpn-admin
-        	$(INSTALL_DIR) $(1)/etc/openvpn/pki
-        endef
+          endef
 
-        define Package/$(PKG_NAME)/postinst
-        #!/bin/sh
-        if [ -z "$${IPKG_INSTROOT}" ]; then
-        	mkdir -p /etc/openvpn-admin/template 2>/dev/null
-        	mkdir -p /tmp/openvpn-admin 2>/dev/null
-        	mkdir -p /etc/openvpn/pki 2>/dev/null
-        	chmod 755 /etc/openvpn-admin/*.sh 2>/dev/null || true
-        	/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
-        fi
-        exit 0
-        endef
+          define Package/$(PKG_NAME)/postinst
+          #!/bin/sh
+             if [ -z "$${IPKG_INSTROOT}" ];   	
+             mkdir -p /etc/openvpn-admin/template 2>/dev/null
+           	mkdir -p /tmp/openvpn-admin 2>/dev/null
+          	mkdir -p /etc/openvpn/pki 2>/dev/null
+          	chmod 755 /etc/openvpn-admin/*.sh 2>/dev/null || true
+           	/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
+            fi
+            exit 0
+            endef
 
-        $(eval $(call BuildPackage,$(PKG_NAME)))
-        EOF
+           $(eval $(call BuildPackage,$(PKG_NAME)))
+           EOF
         
-        echo "构建文件准备完成"
+        echo "包文件准备完成"
     
     - name: Build Package
       run: |
+        echo "开始构建 ${{ matrix.target }} 架构的包..."
         cd openwrt-sdk
-        echo "开始构建包..."
         
-        # 更新 feeds
-        ./scripts/feeds update -a
+        # 配置
+        make defconfig
         
         # 编译包
-        make package/luci-app-openvpn-admin/compile V=s
+        echo "编译 luci-app-openvpn-admin..."
+        make package/luci-app-openvpn-admin/compile V=sc
         
-        # 复制生成的 IPK 文件
-        find bin -name "luci-app-openvpn-admin*.ipk" -type f | while read ipk; do
-          echo "找到 IPK 文件: $ipk"
+        # 查找生成的 IPK 文件
+        echo "查找生成的 IPK 文件..."
+        find bin -name "luci-app-openvpn-admin*.ipk" -type f
+        
+        # 复制 IPK 文件
+        for ipk in $(find bin -name "luci-app-openvpn-admin*.ipk" -type f); do
+          echo "复制: $ipk"
           cp "$ipk" ../luci-app-openvpn-admin-${{ matrix.target }}.ipk
+          break  # 只复制第一个找到的文件
         done
         
-        # 如果没有找到，可能是路径不同
-        if [ ! -f ../luci-app-openvpn-admin-${{ matrix.target }}.ipk ]; then
-          echo "尝试在其他目录查找..."
-          find . -name "*.ipk" -type f | grep -i "openvpn" | head -5
+        # 如果没找到，尝试其他路径
+        if [ ! -f "../luci-app-openvpn-admin-${{ matrix.target }}.ipk" ]; then
+          echo "尝试在其他路径查找..."
+          find . -name "*.ipk" -type f | grep -i openvpn || true
         fi
     
     - name: Upload Artifact
@@ -210,9 +278,20 @@ jobs:
         name: luci-app-openvpn-admin-${{ matrix.target }}
         path: |
           luci-app-openvpn-admin-${{ matrix.target }}.ipk
-        retention-days: 7
+        retention-days: 30
     
-    - name: Create Release (on tag only)
+    - name: Upload to Release (if requested)
+      if: ${{ inputs.upload_release && github.event_name == 'workflow_dispatch' }}
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          luci-app-openvpn-admin-${{ matrix.target }}.ipk
+        tag_name: v${{ inputs.version }}
+        name: Release v${{ inputs.version }}
+        draft: true
+        prerelease: false
+    
+    - name: Auto Upload to Release on Tag
       if: github.event_name == 'release'
       uses: softprops/action-gh-release@v1
       with:
