@@ -6,27 +6,24 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 180  # 3小时超时
-    
+    timeout-minutes: 180
+
     strategy:
       matrix:
-        # 仅保留 360T7 和 x86_64 架构
         target: ["x86_64", "aarch64_cortex-a72"]
         include:
           - target: x86_64
             sdk_name: x86-64
-            # ImmortalWrt 23.05.0 SDK 路径
             sdk_subpath: targets/x86/64/immortalwrt-sdk-23.05.0-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz
           - target: aarch64_cortex-a72
             sdk_name: rockchip-armv8
-            # 360T7 属于 rockchip-armv8 架构
             sdk_subpath: targets/rockchip/armv8/immortalwrt-sdk-23.05.0-rockchip-armv8_gcc-12.3.0_musl.Linux-x86_64.tar.xz
-    
+
     steps:
     - name: 1检出代码
       uses: actions/checkout@v4
-    
-    - name: 2安装必要工具
+
+    - name: 2安装完整依赖工具
       run: |
         sudo apt-get update
         sudo apt-get install -y \
@@ -40,20 +37,19 @@ jobs:
           python3-pip \
           file \
           rsync \
-          curl
-    
+          curl \
+          python3-pyelftools  # 修复 u-boot 依赖
+        # 确保 pip 包可用
+        sudo pip3 install pyelftools || true
+
     - name: 3下载ImmortalWrt SDK（带重试）
       id: download_sdk
       run: |
         echo "下载 ${{ matrix.target }} 架构的SDK..."
-        
-        # 稳定的 ImmortalWrt 镜像源
         MIRRORS=(
           "https://downloads.immortalwrt.org/releases/23.05.0"
           "https://mirrors.pku.edu.cn/immortalwrt/releases/23.05.0"
         )
-        
-        # 尝试从不同镜像下载
         for MIRROR in "${MIRRORS[@]}"; do
           SDK_URL="${MIRROR}/${{ matrix.sdk_subpath }}"
           echo "尝试从: $SDK_URL"
@@ -65,81 +61,98 @@ jobs:
             rm -f openwrt-sdk.tar.xz
           fi
         done
-        
-        # 检查是否下载成功
         if [ ! -f "openwrt-sdk.tar.xz" ]; then
           echo "❌ 所有镜像都下载失败"
           exit 1
         fi
-        
-        echo "解压SDK..."
         tar -xf openwrt-sdk.tar.xz
         mv immortalwrt-sdk-* openwrt-sdk
-    
+
     - name: 4准备包文件
       run: |
-        echo "准备包文件..."
         cd openwrt-sdk
-        
-        # 创建包目录
         mkdir -p package/luci-app-openvpn-admin
-        
-        # 复制插件文件
         if [ -d "../package/luci-app-openvpn-admin" ]; then
           cp -r ../package/luci-app-openvpn-admin/* package/luci-app-openvpn-admin/
         fi
-        
         if [ -d "../files" ]; then
           cp -r ../files/* package/luci-app-openvpn-admin/
         fi
-        
-        # 检查文件结构
         echo "检查文件结构:"
         find package/luci-app-openvpn-admin -type f | head -20
-    
-    - name: 5配置和构建
+
+    - name: 5配置feeds并安装依赖包
       run: |
         cd openwrt-sdk
-        echo "配置构建环境..."
-        
-        # 生成配置文件
+        # 更新 feeds 并安装插件所有依赖
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+        # 手动安装 Makefile 中声明的依赖包
+        ./scripts/feeds install easy-rsa netcat-openbsd openvpn-openssl luci-lib-jsonc luci-compat curl openssl-util
+
+    - name: 6配置构建（仅编译插件及依赖）
+      run: |
+        cd openwrt-sdk
         cat > .config << EOF
         CONFIG_TARGET_${{ matrix.sdk_name }}=y
         CONFIG_PACKAGE_luci-app-openvpn-admin=y
+        # 强制选中所有依赖包
+        CONFIG_PACKAGE_easy-rsa=y
+        CONFIG_PACKAGE_netcat-openbsd=y
+        CONFIG_PACKAGE_openvpn-openssl=y
+        CONFIG_PACKAGE_luci-lib-jsonc=y
+        CONFIG_PACKAGE_luci-compat=y
+        CONFIG_PACKAGE_curl=y
+        CONFIG_PACKAGE_openssl-util=y
         EOF
-        
-        # 更新feeds并解决依赖
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
-        
-        echo "开始构建插件..."
-        make package/luci-app-openvpn-admin/compile V=s 2>&1 | tail -50
-    
-    - name: 6查找IPK文件
+        # 检查配置
+        make defconfig
+
+    - name: 7编译插件及所有依赖
       run: |
         cd openwrt-sdk
-        echo "查找生成的IPK文件..."
-        
+        echo "开始编译插件及依赖..."
+        # 忽略无关错误，只编译目标包
+        make package/luci-app-openvpn-admin/compile V=s IGNORE_ERRORS=1 -j$(nproc)
+        # 额外编译依赖包（确保单独输出 IPK）
+        make package/easy-rsa/compile V=s
+        make package/netcat-openbsd/compile V=s
+        make package/openvpn-openssl/compile V=s
+
+    - name: 8收集插件及依赖 IPK 文件
+      run: |
+        cd openwrt-sdk
+        mkdir -p ../output-${{ matrix.target }}
+        # 收集插件 IPK
         IPK_FILE=$(find bin/packages -name "luci-app-openvpn-admin*.ipk" -type f | head -1)
         if [ -n "$IPK_FILE" ]; then
-          echo "找到: $IPK_FILE"
-          cp "$IPK_FILE" ../luci-app-openvpn-admin-${{ matrix.target }}.ipk
+          cp "$IPK_FILE" ../output-${{ matrix.target }}/
+          echo "✅ 插件 IPK 已收集"
         else
-          echo "❌ 未找到IPK文件"
-          find . -name "*.ipk" -type f | head -20
+          echo "❌ 插件 IPK 未找到"
+          find . -name "*.ipk" | head -20
           exit 1
         fi
-        
-        ls -lh ../luci-app-openvpn-admin-${{ matrix.target }}.ipk
-    
-    - name: 7上传产物
+        # 收集依赖 IPK
+        for pkg in easy-rsa netcat-openbsd openvpn-openssl luci-lib-jsonc curl openssl-util; do
+          DEP_IPK=$(find bin/packages -name "${pkg}*.ipk" -type f | head -1)
+          if [ -n "$DEP_IPK" ]; then
+            cp "$DEP_IPK" ../output-${{ matrix.target }}/
+            echo "✅ 依赖 $pkg IPK 已收集"
+          else
+            echo "⚠ 依赖 $pkg IPK 未找到"
+          fi
+        done
+        ls -lh ../output-${{ matrix.target }}/
+
+    - name: 9上传产物（插件+依赖）
       uses: actions/upload-artifact@v4
       with:
-        name: openvpn-admin-${{ matrix.target }}
-        path: luci-app-openvpn-admin-${{ matrix.target }}.ipk
+        name: openvpn-admin-${{ matrix.target }}-with-deps
+        path: output-${{ matrix.target }}/*.ipk
         retention-days: 7
-    
-    - name: 8构建状态
+
+    - name: 10构建状态
       if: always()
       run: |
         echo "========================================"
@@ -148,8 +161,7 @@ jobs:
         echo "作业状态: ${{ job.status }}"
         echo "步骤状态: ${{ steps.download_sdk.outcome }}"
         echo ""
-        
-        if [ -f "luci-app-openvpn-admin-${{ matrix.target }}.ipk" ]; then
+        if [ -d "output-${{ matrix.target }}" ] && [ -n "$(ls output-${{ matrix.target }}/*.ipk 2>/dev/null)" ]; then
           echo "✅ 构建成功!"
         else
           echo "❌ 构建失败或文件未生成"
