@@ -1,132 +1,48 @@
 # luci-app-openvpn-admin
-# 一、完整的项目结构
-luci-app-openvpn-admin/
-├── .github/
-│   └── workflows/
-│       └── build-release.yml    # GitHub Actions工作流
-├── luci-app-openvpn-admin/
-│   ├── Makefile                 # 插件Makefile
-│   ├── root/
-│   │   ├── etc/
-│   │   │   ├── config/
-│   │   │   │   └── openvpn-admin
-│   │   │   └── openvpn-admin/
-│   │   │       ├── generate-client.sh
-│   │   │       ├── client-connect-cn.sh
-│   │   │       ├── renewcert.sh
-│   │   │       └── clean-garbage.sh
-│   │   └── usr/
-│   │       └── lib/
-│   │           └── lua/
-│   │               └── luci/
-│   │                   ├── controller/
-│   │                   │   └── openvpn-admin.lua
-│   │                   └── view/
-│   │                       └── openvpn-admin/
-│   │                           ├── status.htm
-│   │                           ├── client.htm
-│   │                           ├── server.htm
-│   │                           ├── logs.htm
-│   │                           └── settings.htm
-│   └── files/
-│       └── README.txt           # 安装说明
-├── scripts/
-│   ├── setup-environment.sh     # 环境设置脚本
-│   └── check-dependencies.sh    # 依赖检查脚本
-├── LICENSE
-├── README.md
-└── .gitignore
 
-# OpenVPN 管理界面 - 安装指南
-## 概述
-该LuCI应用为OpenWrt/LEDE/ImmortalWrt路由器上的OpenVPN提供一站式管理界面。
+[![GitHub Release](https://img.shields.io/github/v/release/YOUR_USERNAME/luci-app-openvpn-admin)](https://github.com/YOUR_USERNAME/luci-app-openvpn-admin/releases)
+[![Build Status](https://github.com/YOUR_USERNAME/luci-app-openvpn-admin/workflows/Build%20luci-app-openvpn-admin/badge.svg)](https://github.com/YOUR_USERNAME/luci-app-openvpn-admin/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+一个功能完整的 OpenVPN 管理界面插件，适用于 OpenWrt/LEDE/ImmortalWrt 系统。
 
 ## 功能特性
-1. 基于管理接口的实时连接监控
-2. 客户端证书的生成与管理
-3. 服务端配置编辑器
-4. 连接历史记录与日志查看
-5. 客户端黑名单管理
-6. 证书续签与重置
 
-## 运行要求
-1. 支持管理接口的OpenVPN版本
-2. 用于证书管理的Easy-RSA工具
-3. 集成JSON和网络库的LuCI环境
+### 🚀 核心功能
+- **实时状态监控**：实时显示 OpenVPN 服务状态和连接客户端
+- **客户端管理**：生成客户端配置文件，支持一键下载
+- **服务端配置**：可视化配置 OpenVPN 服务器参数
+- **日志查看**：实时查看 OpenVPN 日志，支持自动刷新和过滤
+- **黑名单管理**：基于客户端 CN 的黑名单系统
+- **证书管理**：支持重置所有证书
 
-## 安装步骤
-1. 安装所需依赖组件：
-   opkg update
-   opkg install openvpn-openssl easy-rsa curl openssl-util
+### 🔧 技术特性
+- 基于 OpenVPN Management Interface 实时获取连接状态
+- 集成 EasyRSA 进行证书管理
+- 支持自动刷新和实时流量监控
+- 完整的 LuCI 界面集成
+- 支持多种架构（x86_64, ARM, MIPS）
 
-2. 安装本应用包：
+## 系统要求
+
+- OpenWrt 21.02 或更高版本
+- LuCI 框架
+- OpenVPN（包含 management 接口支持）
+- EasyRSA（用于证书管理）
+
+## 安装方法
+
+### 方法一：在线安装（推荐）
+
+1. 登录 OpenWrt/LEDE/ImmortalWrt 的 LuCI 界面
+2. 进入 `系统` → `软件包`
+3. 更新软件包列表
+4. 搜索 `luci-app-openvpn-admin` 并安装
+
+### 方法二：手动安装 IPK
+
+1. 从 [Releases 页面](https://github.com/YOUR_USERNAME/luci-app-openvpn-admin/releases) 下载对应架构的 IPK 文件
+2. 通过 SSH 登录路由器
+3. 上传并安装 IPK 文件：
+   ```bash
    opkg install luci-app-openvpn-admin_*.ipk
-
-3. 配置OpenVPN管理接口：
-   编辑配置文件 /etc/config/openvpn，为服务端实例添加以下配置项：
-   option management '127.0.0.1 7505'
-   option management_forget_disconnect '1'
-
-4. 访问管理界面：
-   登录LuCI → 进入VPN板块 → 打开OpenVPN管理页面
-
-## 配置说明
-应用的配置文件存储于 /etc/config/openvpn-admin
-
-可通过LuCI界面修改默认配置，路径为：
-- 系统设置 → VPN → OpenVPN管理 → 配置项
-
-## 故障排查
-1. 若无法显示连接状态：
-   - 验证OpenVPN管理接口是否已启用
-   - 检查OpenVPN运行状态：/etc/init.d/openvpn status
-   - 查看日志文件：/tmp/openvpn.log
-
-2. 若证书生成失败：
-   - 确认已安装Easy-RSA：opkg install easy-rsa
-   - 检查文件权限：chmod 755 /etc/easy-rsa
-
-3. 若LuCI中未显示该管理界面：
-   - 重启uhttpd服务：/etc/init.d/uhttpd restart
-   - 清除浏览器缓存
-
-## 技术支持
-如需反馈问题或提出功能需求，请访问：
-https://github.com/[你的用户名]/luci-app-openvpn-admin
-
-## 许可证
-采用GPL-3.0仅需遵守版许可证协议
-
-
-luci-app-openvpn-admin/
-├── Makefile
-├── README.md
-├── LICENSE
-├── .github/
-│   └── workflows/
-│       └── build.yml
-├── files/
-│   ├── etc/
-│   │   ├── config/
-│   │   │   └── openvpn-admin
-│   │   └── openvpn-admin/
-│   │       ├── generate-client.sh
-│   │       ├── client-connect-cn.sh
-│   │       ├── renewcert.sh
-│   │       └── clean-garbage.sh
-│   └── usr/
-│       └── lib/
-│           └── lua/
-│               └── luci/
-│                   ├── controller/
-│                   │   └── openvpn-admin.lua
-│                   └── view/
-│                       └── openvpn-admin/
-│                           ├── client.htm
-│                           ├── logs.htm
-│                           ├── server.htm
-│                           ├── settings.htm
-│                           └── status.htm
-└── package/
-    └── luci-app-openvpn-admin/
-        └── Makefile
