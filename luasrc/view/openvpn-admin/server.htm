@@ -1,0 +1,1275 @@
+<%+header%>
+
+<%
+local dsp = require "luci.dispatcher"
+local sys = require "luci.sys"
+local util = require("luci.util")
+local uci = require("luci.model.uci").cursor()
+
+-- 从openvpn-admin.lua模块获取配置
+local openvpn_admin = require "luci.controller.openvpn-admin"
+local admin_config = openvpn_admin.get_admin_config()
+local openvpn_instance = admin_config.openvpn_instance
+local openvpn_config_path = admin_config.openvpn_config_path
+
+-- 读取服务器模板内容
+local template_content = ""
+local template_path = admin_config.server_template_path or "/etc/openvpn-admin/template/server.template"
+if sys.call("test -f " .. template_path .. " 2>/dev/null") == 0 then
+    local content = sys.exec("cat " .. template_path .. " 2>/dev/null")
+    if content and content ~= "" then
+        template_content = util.trim(content)
+    else
+        template_content = "模板文件为空"
+    end
+else
+    template_content = "模板文件不存在: " .. template_path
+end
+
+-- 读取配置文件内容
+local config_content = "文件不存在或无法读取"
+local config_exists = sys.call("test -f " .. openvpn_config_path .. " 2>/dev/null")
+if config_exists == 0 then
+    local content = sys.exec("cat " .. openvpn_config_path .. " 2>/dev/null")
+    if content and content ~= "" then
+        config_content = util.trim(content)
+    end
+end
+
+-- 计算配置内容行数
+local line_count = 0
+if config_content and config_content ~= "" then
+    for _ in config_content:gmatch("[^\n]+") do
+        line_count = line_count + 1
+    end
+end
+
+-- 计算模板内容行数
+local template_line_count = 0
+if template_content and template_content ~= "" then
+    for _ in template_content:gmatch("[^\n]+") do
+        template_line_count = template_line_count + 1
+    end
+end
+
+-- 设置textarea的行数
+local textarea_rows = math.min(math.max(20, line_count), 50)
+
+-- 获取当前页面URL
+local current_url = dsp.build_url("admin/vpn/openvpn-admin/server")
+%>
+
+<div class="cbi-map" id="cbi-openvpn-server">
+    <!-- 页面标题 -->
+    <h2 name="content"><%:OpenVPN服务器配置%></h2>
+    
+    <!-- 页面说明 -->
+    <div class="info-box">
+        <p><strong><%:功能说明%>:</strong></p>
+        <p><%:左侧显示OpenVPN配置模板内容（使用可复制并修改对应参数），中间显示当前配置文件内容，右侧可编辑新配置内容（保存-是这里的参数）。%></p>
+        <p><%:修改后点击"保存并应用"按钮保存并应用新配置。%></p>
+        <p><strong><%:当前配置信息%>:</strong></p>
+        <ul style="margin: 5px 0 0 20px; padding: 0;">
+            <li><%:配置文件路径%>: <code><%=openvpn_config_path%></code></li>
+            <li><%:OpenVPN实例名称%>: <code><%=openvpn_instance%></code></li>
+            <li><%:配置文件行数%>: <%=line_count%> 行</li>
+            <li><%:模板文件路径%>: <code><%=template_path%></code></li>
+            <li><%:模板文件行数%>: <%=template_line_count%> 行</li>
+        </ul>
+    </div>
+    
+    <!-- 三列布局容器 -->
+    <div class="triple-column-layout">
+        <!-- 左侧列：模板内容显示（只读） -->
+        <div class="column-left">
+            <div class="template-display-box">
+                <div class="template-content-display">
+                    <div class="content-header">
+                        <span><%:配置模板内容%> (<code><%=template_path%></code>)</span>
+                        <div class="content-controls">
+                            <button class="cbi-button cbi-button-refresh" onclick="refreshTemplate()">
+                                <span class="icon">↻</span> <%:刷新%>
+                            </button>
+                            <button class="cbi-button cbi-button-copy" onclick="copyTemplateContent()">
+                                <span class="icon">⎘</span> <%:复制%>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="content-body">
+                        <pre id="template-display-content"><%=luci.util.pcdata(template_content)%></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 中间列：配置文件内容显示 -->
+        <div class="column-middle">
+            <div class="config-display-box">
+                <!-- 配置文件内容显示区域 -->
+                <div class="config-content-display">
+                    <div class="content-header">
+                        <span><%:当前配置文件内容%> (<code><%=openvpn_config_path%></code>)</span>
+                        <div class="content-controls">
+                            <button class="cbi-button cbi-button-refresh" onclick="refreshConfig()">
+                                <span class="icon">↻</span> <%:刷新%>
+                            </button>
+                            <button class="cbi-button cbi-button-download" onclick="downloadConfig()">
+                                <span class="icon">↓</span> <%:下载%>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="content-body">
+                        <pre id="config-display-content"><%=luci.util.pcdata(config_content)%></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 右侧列：新配置输入 -->
+        <div class="column-right">
+            <div class="config-input-box">
+                <!-- 新配置内容输入区域 -->
+                <div class="config-content-input">
+                    <div class="input-header">
+                        <span><%:新配置内容 (在此处输入)%></span>
+                        <div class="input-controls">
+                            <button class="cbi-button cbi-button-clear" onclick="clearConfigInput()">
+                                <span class="icon">×</span> <%:清空%>
+                            </button>
+                            <button class="cbi-button cbi-button-load" onclick="loadConfig()">
+                                <span class="icon">↓</span> <%:加载配置%>
+                            </button>
+                            <button class="cbi-button cbi-button-validate" onclick="validateConfig()">
+                                <span class="icon">✓</span> <%:配置校验%>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="input-body">
+                        <!-- 隐藏的文本区域用于实际输入 -->
+                        <textarea 
+                            id="config-input-content" 
+                            rows="<%=textarea_rows%>"
+                            placeholder="<%:请输入新的OpenVPN配置内容，每行一个配置项。例如：%>&#10;config openvpn '<%=openvpn_instance%>'&#10;    option enabled '1'&#10;    option port '1194'&#10;    option proto 'udp'&#10;    option dev 'tun'&#10;    option management '127.0.0.1 7505'&#10;    option management_forget_disconnect '1'"
+                            autocomplete="off"
+                            autocorrect="off"
+                            autocapitalize="off"
+                            spellcheck="false"
+                            wrap="off"
+                            style="display: none;"
+                        ></textarea>
+                        
+                        <!-- 显示语法高亮的预格式化区域 -->
+                        <pre 
+                            id="config-input-highlight" 
+                            class="editable-pre"
+                            contenteditable="true"
+                            spellcheck="false"
+                            data-placeholder="<%:请输入新的OpenVPN配置内容，每行一个配置项。例如：%>&#10;config openvpn '<%=openvpn_instance%>'&#10;    option enabled '1'&#10;    option port '1194'&#10;    option proto 'udp'&#10;    option dev 'tun'&#10;    option management '127.0.0.1 7505'&#10;    option management_forget_disconnect '1'"
+                        ></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- LuCI CBI风格的操作按钮 -->
+    <div class="cbi-page-actions">
+        <input class="btn cbi-button cbi-button-apply" type="button" value="<%:保存并应用%>" onclick="applyConfig()" />
+        <input class="btn cbi-button cbi-button-save" type="button" value="<%:保存%>" onclick="saveConfig()" />
+        <input class="btn cbi-button cbi-button-reset" type="button" value="<%:复位%>" onclick="resetConfig()" />
+    </div>
+</div>
+
+<style type="text/css">
+/* 基础样式 */
+.info-box {
+    margin: 1px 0;
+    padding: 10px;
+    background-color: var(--field-bg-color, #f8f9fa);
+    border-radius: 3px;
+    border: 1px solid var(--border-color, #dee2e6);
+}
+
+.info-box ul {
+    margin: 5px 0 0 20px;
+    padding: 0;
+}
+
+.info-box li {
+    margin: 3px 0;
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.info-box code {
+    background-color: #e9ecef;
+    padding: 2px 4px;
+    border-radius: 3px;
+    font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+    font-size: 12px;
+}
+
+body.dark-mode .info-box {
+    background-color: #2d2d2d;
+    border-color: #444;
+    color: #ddd;
+}
+
+body.dark-mode .info-box code {
+    background-color: #363636;
+    color: #ddd;
+}
+
+/* 三列布局 */
+.triple-column-layout {
+    display: flex;
+    gap: 15px;
+    margin: 15px 0;
+    min-height: 650px;
+    margin-top: 0px; 
+}
+
+.column-left,
+.column-middle,
+.column-right {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+/* 模板显示框、配置显示框和输入框共用样式 */
+.template-display-box,
+.config-display-box,
+.config-input-box {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border-color, #ddd);
+    border-radius: 4px;
+    background-color: var(--field-bg-color, #fff);
+    overflow: hidden;
+}
+
+/* 模板内容显示区域 */
+.template-content-display {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* 配置内容显示区域 */
+.config-content-display {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.content-header {
+    padding: 8px 15px;
+    background-color: var(--table-header-bg, #f8f9fa);
+    border-bottom: 1px solid var(--border-color, #ddd);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-weight: bold;
+    font-size: 14px;
+    color: #333;
+}
+
+.content-header code {
+    font-size: 12px;
+    background-color: #e9ecef;
+    padding: 2px 4px;
+    border-radius: 3px;
+    font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+}
+
+.content-body {
+    flex: 1;
+    overflow: auto;
+    background-color: #f8f9fa;
+}
+
+#template-display-content,
+#config-display-content {
+    margin: 0;
+    padding: 15px;
+    font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+    font-size: 12px;
+    line-height: 1.4;
+    color: #333;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    background: transparent;
+    border: none;
+    min-height: 100%;
+}
+
+/* 配置输入区域 */
+.config-content-input {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.input-header {
+    padding: 8px 15px;
+    background-color: var(--table-header-bg, #f8f9fa);
+    border-bottom: 1px solid var(--border-color, #ddd);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-weight: bold;
+    font-size: 14px;
+    color: #333;
+}
+
+.input-body {
+    flex: 1;
+    overflow: hidden;
+    background-color: #fff;
+    position: relative;
+}
+
+#config-input-content {
+    width: 100%;
+    height: 100%;
+    padding: 15px;
+    border: none;
+    resize: none;
+    font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+    font-size: 12px;
+    line-height: 1.4;
+    color: #333;
+    background-color: #fff;
+    box-sizing: border-box;
+    overflow: auto;
+}
+
+#config-input-content:focus {
+    outline: none;
+    background-color: #f8f9fa;
+}
+
+/* 可编辑的语法高亮区域 */
+.editable-pre {
+    margin: 0;
+    padding: 15px;
+    font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+    font-size: 12px;
+    line-height: 1.4;
+    color: #333;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    background-color: #fff;
+    border: none;
+    min-height: 100%;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    box-sizing: border-box;
+    outline: none;
+}
+
+.editable-pre:empty:before {
+    content: attr(data-placeholder);
+    color: #999;
+    font-style: italic;
+}
+
+.editable-pre:focus {
+    background-color: #f8f9fa;
+}
+
+/* LuCI CBI操作按钮样式 */
+.cbi-page-actions {
+    margin-top: 20px;
+    padding: 15px;
+    background-color: var(--table-header-bg, #f5f5f5);
+    border: 0px solid var(--border-color, #ddd);
+    border-radius: 4px;
+    text-align: right;
+}
+
+.cbi-page-actions .cbi-button {
+    margin-left: 10px;
+    padding: 8px 16px;
+    font-size: 14px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+/* 按钮样式 - 与LuCI CBI保持一致 */
+.cbi-button-refresh {
+    background-color: #2196F3 !important;
+    color: white !important;
+    border-color: #1976D2 !important;
+    padding: 4px 8px !important;
+    font-size: 12px !important;
+}
+
+.cbi-button-download {
+    background-color: #4CAF50 !important;
+    color: white !important;
+    border-color: #388E3C !important;
+    padding: 4px 8px !important;
+    font-size: 12px !important;
+}
+
+.cbi-button-clear {
+    background-color: #9e9e9e !important;
+    color: white !important;
+    border-color: #757575 !important;
+    padding: 4px 8px !important;
+    font-size: 12px !important;
+}
+
+.cbi-button-copy {
+    background-color: #FF9800 !important;
+    color: white !important;
+    border-color: #F57C00 !important;
+    padding: 4px 8px !important;
+    font-size: 12px !important;
+}
+
+.cbi-button-load {
+    background-color: #2196F3 !important;
+    color: white !important;
+    border-color: #303F9F !important;
+    padding: 4px 8px !important;
+    font-size: 12px !important;
+}
+
+.cbi-button-validate {
+    background-color: #2196F3 !important;
+    color: white !important;
+    border-color: #388E3C !important;
+    padding: 4px 8px !important;
+    font-size: 12px !important;
+}
+
+.cbi-button-apply {
+    background-color: #2196F3 !important;
+    color: white !important;
+    border-color: #1976D2 !important;
+}
+
+.cbi-button-save {
+    background-color: #4CAF50 !important;
+    color: white !important;
+    border-color: #388E3C !important;
+}
+
+.cbi-button-reset {
+    background-color: #f44336 !important;
+    color: white !important;
+    border-color: #d32f2f !important;
+}
+
+/* 语法高亮样式 */
+#template-display-content .keyword,
+#config-display-content .keyword,
+.editable-pre .keyword { 
+    color: #0000ff; 
+    font-weight: bold; 
+}
+
+#template-display-content .option,
+#config-display-content .option,
+.editable-pre .option { 
+    color: #008000; 
+}
+
+#template-display-content .comment,
+#config-display-content .comment,
+.editable-pre .comment { 
+    color: #808080; 
+    font-style: italic; 
+}
+
+#template-display-content .string,
+#config-display-content .string,
+.editable-pre .string { 
+    color: #a31515; 
+}
+
+#template-display-content .number,
+#config-display-content .number,
+.editable-pre .number { 
+    color: #098658; 
+}
+
+/* 深色模式支持 */
+body.dark-mode {
+    --field-bg-color: #2d2d2d;
+    --border-color: #444;
+    --table-header-bg: #3d3d3d;
+    --row-bg-2: #363636;
+}
+
+body.dark-mode .template-display-box,
+body.dark-mode .config-display-box,
+body.dark-mode .config-input-box {
+    background-color: #2d2d2d;
+    border-color: #444;
+}
+
+body.dark-mode .content-header,
+body.dark-mode .input-header,
+body.dark-mode .cbi-page-actions {
+    background-color: #3d3d3d;
+    border-color: #444;
+    color: #ddd;
+}
+
+body.dark-mode .content-header,
+body.dark-mode .input-header {
+    font-weight: bold;
+    color: #ddd;
+}
+
+body.dark-mode #template-display-content,
+body.dark-mode #config-display-content {
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+}
+
+body.dark-mode .editable-pre {
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+}
+
+body.dark-mode .editable-pre:focus {
+    background-color: #252525;
+}
+
+body.dark-mode .editable-pre:empty:before {
+    color: #777;
+}
+
+body.dark-mode #config-input-content {
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+}
+
+body.dark-mode #config-input-content:focus {
+    background-color: #252525;
+}
+
+body.dark-mode .content-body {
+    background-color: #1e1e1e;
+}
+
+/* 深色模式语法高亮 */
+body.dark-mode #template-display-content .keyword,
+body.dark-mode #config-display-content .keyword,
+body.dark-mode .editable-pre .keyword { 
+    color: #569cd6; 
+}
+
+body.dark-mode #template-display-content .option,
+body.dark-mode #config-display-content .option,
+body.dark-mode .editable-pre .option { 
+    color: #4ec9b0; 
+}
+
+body.dark-mode #template-display-content .comment,
+body.dark-mode #config-display-content .comment,
+body.dark-mode .editable-pre .comment { 
+    color: #6a9955; 
+}
+
+body.dark-mode #template-display-content .string,
+body.dark-mode #config-display-content .string,
+body.dark-mode .editable-pre .string { 
+    color: #ce9178; 
+}
+
+body.dark-mode #template-display-content .number,
+body.dark-mode #config-display-content .number,
+body.dark-mode .editable-pre .number { 
+    color: #b5cea8; 
+}
+
+/* 响应式设计 */
+@media (max-width: 1200px) {
+    .triple-column-layout {
+        flex-direction: column;
+        min-height: auto;
+    }
+    
+    .column-left,
+    .column-middle,
+    .column-right {
+        min-height: 400px;
+        margin-bottom: 15px;
+    }
+}
+
+@media (max-width: 768px) {
+    .cbi-page-actions {
+        text-align: center;
+    }
+    
+    .cbi-page-actions .cbi-button {
+        display: block;
+        width: 100%;
+        margin: 5px 0;
+    }
+    
+    .info-box ul {
+        margin-left: 15px;
+    }
+}
+</style>
+
+<script type="text/javascript">
+//<![CDATA[
+
+// 全局变量
+var configChanged = false;
+var originalConfig = "";
+var openvpnConfigPath = "<%=openvpn_config_path%>";
+var openvpnInstance = "<%=openvpn_instance%>";
+var serverTemplatePath = "<%=template_path%>";
+var highlightTimer = null;
+
+// 页面加载完成后初始化
+window.addEventListener('load', function() {
+    // 获取当前配置内容
+    var currentConfig = document.getElementById('config-display-content').textContent;
+    originalConfig = currentConfig;
+    
+    // 获取当前模板内容
+    var currentTemplate = document.getElementById('template-display-content').textContent;
+    
+    // 应用语法高亮
+    applySyntaxHighlighting('config-display-content');
+    applySyntaxHighlighting('template-display-content');
+    
+    // 初始化可编辑区域
+    var editablePre = document.getElementById('config-input-highlight');
+    var textarea = document.getElementById('config-input-content');
+    
+    // 设置占位符
+    editablePre.setAttribute('data-placeholder', "<%:请输入新的OpenVPN配置内容...%>\n\n<%:配置语法示例：%>\nconfig openvpn '" + openvpnInstance + "'\n    option enabled '1'\n    option port '1194'\n    option proto 'udp'\n    option dev 'tun'\n    option management '127.0.0.1 7505'\n    option management_forget_disconnect '1'\n    option server '10.8.0.0 255.255.255.0'\n    option ca '<%=admin_config.openvpn_pki%>/ca.crt'\n    option cert '<%=admin_config.openvpn_pki%>/server.crt'\n    option key '<%=admin_config.openvpn_pki%>/server.key'");
+    
+    // 同步textarea和可编辑区域的内容
+    editablePre.addEventListener('input', function() {
+        // 更新隐藏的textarea
+        textarea.value = this.textContent;
+        configChanged = this.textContent !== "";
+        
+        // 延迟应用语法高亮，避免频繁重绘
+        if (highlightTimer) {
+            clearTimeout(highlightTimer);
+        }
+        highlightTimer = setTimeout(function() {
+            applyEditableSyntaxHighlighting('config-input-highlight');
+        }, 300);
+    });
+    
+    editablePre.addEventListener('focus', function() {
+        if (this.textContent === "") {
+            // 可以在这里添加状态提示
+        }
+    });
+    
+    // 初始应用语法高亮
+    applyEditableSyntaxHighlighting('config-input-highlight');
+});
+
+// 刷新模板内容
+function refreshTemplate() {
+    // 重新加载页面即可刷新模板内容
+    location.reload();
+}
+
+// 复制模板内容到剪贴板
+function copyTemplateContent() {
+    var templateContent = document.getElementById('template-display-content').textContent;
+    
+    // 使用现代剪贴板API
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(templateContent).then(function() {
+            alert('模板内容已复制到剪贴板');
+        }, function(err) {
+            console.error('复制失败: ', err);
+            fallbackCopyTextToClipboard(templateContent);
+        });
+    } else {
+        // 使用备用方法
+        fallbackCopyTextToClipboard(templateContent);
+    }
+}
+
+// 备用复制方法
+function fallbackCopyTextToClipboard(text) {
+    var textArea = document.createElement("textarea");
+    textArea.value = text;
+    
+    // 避免滚动到视图中
+    textArea.style.top = "0";
+    textArea.style.left = "0";
+    textArea.style.position = "fixed";
+    
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+    
+    try {
+        var successful = document.execCommand('copy');
+        if (successful) {
+            alert('模板内容已复制到剪贴板');
+        } else {
+            alert('复制失败，请手动复制');
+        }
+    } catch (err) {
+        console.error('复制失败: ', err);
+        alert('复制失败，请手动复制');
+    }
+    
+    document.body.removeChild(textArea);
+}
+
+// 刷新配置内容
+function refreshConfig() {
+    XHR.get('<%=dsp.build_url("admin/vpn/openvpn-admin/get_config")%>', null,
+        function(x, data) {
+            if(x && x.status == 200) {
+                var result = JSON.parse(x.responseText);
+                if (result.success) {
+                    updateConfigDisplay(result.data.content);
+                    alert('配置已刷新');
+                } else {
+                    alert('刷新失败: ' + result.message);
+                }
+            }
+        }
+    );
+}
+
+// 下载配置文件
+function downloadConfig() {
+    var url = '<%=dsp.build_url("admin/vpn/openvpn-admin/download_config")%>';
+    window.open(url, '_blank');
+}
+
+// 更新配置显示
+function updateConfigDisplay(content) {
+    if (content) {
+        document.getElementById('config-display-content').textContent = content;
+        originalConfig = content;
+        applySyntaxHighlighting('config-display-content');
+    }
+}
+
+// 清空配置输入
+function clearConfigInput() {
+    var editablePre = document.getElementById('config-input-highlight');
+    var textarea = document.getElementById('config-input-content');
+    
+    editablePre.textContent = "";
+    textarea.value = "";
+    configChanged = false;
+    
+    // 应用语法高亮
+    applyEditableSyntaxHighlighting('config-input-highlight');
+}
+
+// 加载配置到输入框
+function loadConfig() {
+    var currentConfig = document.getElementById('config-display-content').textContent;
+    var editablePre = document.getElementById('config-input-highlight');
+    var textarea = document.getElementById('config-input-content');
+    
+    editablePre.textContent = currentConfig;
+    textarea.value = currentConfig;
+    configChanged = false;
+    
+    // 应用语法高亮
+    applyEditableSyntaxHighlighting('config-input-highlight');
+}
+
+// 配置校验
+function validateConfig() {
+    var editablePre = document.getElementById('config-input-highlight');
+    var configText = editablePre.textContent;
+    
+    if (!configText.trim()) {
+        alert('配置内容为空，请输入配置。');
+        return;
+    }
+    
+    var lines = configText.split('\n');
+    var validationResult = {
+        hasConfigOpenvpn: false,
+        configLineIndex: -1,
+        missingOptions: [],
+        hasManagement: false,
+        configSections: []
+    };
+    
+    // 检查第一行是否包含config openvpn
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (line.startsWith("config openvpn")) {
+            validationResult.hasConfigOpenvpn = true;
+            validationResult.configLineIndex = i;
+            
+            // 提取配置节名称
+            var match = line.match(/config openvpn ['"]([^'"]+)['"]/);
+            if (match && match[1]) {
+                validationResult.configSections.push(match[1]);
+            }
+            break;
+        }
+    }
+    
+    // 如果没有找到config openvpn，自动添加
+    if (!validationResult.hasConfigOpenvpn) {
+        if (confirm('配置缺少config openvpn实例，是否自动添加？')) {
+            var editablePre = document.getElementById('config-input-highlight');
+            var currentValue = editablePre.textContent;
+            
+            // 在第一行添加config openvpn 'server'（前面没有空格）
+            var newConfig = "config openvpn '" + openvpnInstance + "'\n" + currentValue;
+            editablePre.textContent = newConfig;
+            
+            // 同步到隐藏的textarea
+            document.getElementById('config-input-content').value = newConfig;
+            
+            // 应用语法高亮
+            applyEditableSyntaxHighlighting('config-input-highlight');
+            
+            // 重新校验
+            setTimeout(function() {
+                validateConfig();
+            }, 100);
+            return;
+        } else {
+            alert('错误: 配置必须包含config openvpn实例，并且必须在第一行！');
+            return;
+        }
+    }
+    
+    // 检查是否使用了正确的实例名称
+    var foundCorrectInstance = false;
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (line.startsWith("config openvpn") && line.includes("'" + openvpnInstance + "'")) {
+            foundCorrectInstance = true;
+            break;
+        }
+    }
+    
+    if (!foundCorrectInstance) {
+        if (confirm('配置中使用的实例名称与当前设置(' + openvpnInstance + ')不一致，是否自动修正？')) {
+            var editablePre = document.getElementById('config-input-highlight');
+            var currentValue = editablePre.textContent;
+            
+            // 替换实例名称
+            var regex = /config openvpn ['"]([^'"]+)['"]/g;
+            var newConfig = currentValue.replace(regex, "config openvpn '" + openvpnInstance + "'");
+            editablePre.textContent = newConfig;
+            
+            // 同步到隐藏的textarea
+            document.getElementById('config-input-content').value = newConfig;
+            
+            // 应用语法高亮
+            applyEditableSyntaxHighlighting('config-input-highlight');
+            
+            // 重新校验
+            setTimeout(function() {
+                validateConfig();
+            }, 100);
+            return;
+        }
+    }
+    
+    // 检查必须的选项
+    var requiredOptions = [
+        { name: 'proto', pattern: /option\s+proto\s+['"]/ },
+        { name: 'port', pattern: /option\s+port\s+['"]/ },
+        { name: 'ddns', pattern: /option\s+ddns\s+['"]/ },
+        { name: 'dev', pattern: /option\s+dev\s+['"]/ },
+        { name: 'server', pattern: /option\s+server\s+['"]/ },
+        { name: 'ca', pattern: /option\s+ca\s+['"]/ },
+        { name: 'cert', pattern: /option\s+cert\s+['"]/ },
+        { name: 'key', pattern: /option\s+key\s+['"]/ },
+        { name: 'dh', pattern: /option\s+dh\s+['"]/ },
+        { name: 'enabled', pattern: /option\s+enabled\s+['"]/ },
+        { name: 'management', pattern: /option\s+management\s+['"]/ }
+    ];
+    
+    for (var i = 0; i < requiredOptions.length; i++) {
+        var option = requiredOptions[i];
+        var found = false;
+        
+        for (var j = 0; j < lines.length; j++) {
+            if (option.pattern.test(lines[j].trim())) {
+                found = true;
+                if (option.name === 'management') {
+                    validationResult.hasManagement = true;
+                }
+                break;
+            }
+        }
+        
+        if (!found) {
+            validationResult.missingOptions.push(option.name);
+        }
+    }
+    
+    // 显示校验结果
+    var resultMessage = "配置校验结果:\n\n";
+    
+    if (validationResult.missingOptions.length === 0) {
+        resultMessage += "✓ 所有必要选项都已配置\n";
+        resultMessage += "✓ 可 保存并应用 进行操作\n";
+        resultMessage += "\n配置校验完成!";
+        alert(resultMessage);
+        return;
+    } else {
+        resultMessage += "✗ 缺少以下必要选项:\n";
+        for (var i = 0; i < validationResult.missingOptions.length; i++) {
+            resultMessage += "  - " + validationResult.missingOptions[i] + "\n";
+        }
+        
+        // 询问是否自动添加缺失的选项
+        if (confirm(resultMessage + "\n是否自动添加缺失的选项？")) {
+            var editablePre = document.getElementById('config-input-highlight');
+            var configLines = editablePre.textContent.split('\n');
+            
+            // 找到config节的结束位置（下一个config开始或文件结束）
+            var configEndIndex = configLines.length;
+            for (var i = validationResult.configLineIndex + 1; i < configLines.length; i++) {
+                if (configLines[i].trim().startsWith("config ")) {
+                    configEndIndex = i;
+                    break;
+                }
+            }
+            
+            // 添加缺失的选项到config节末尾
+            var optionsToAdd = [];
+            
+            // 为每个缺失的选项生成默认值
+            var defaultValues = {
+                'proto': 'udp',
+                'port': '1194',
+                'ddns': '0',
+                'dev': 'tun',
+                'server': '10.8.0.0 255.255.255.0',
+                'ca': '<%=admin_config.openvpn_pki%>/ca.crt',
+                'cert': '<%=admin_config.openvpn_pki%>/server.crt',
+                'key': '<%=admin_config.openvpn_pki%>/server.key',
+                'dh': '<%=admin_config.openvpn_pki%>/dh.pem',
+                'enabled': '1',
+                'management': '127.0.0.1 7505'
+            };
+            
+            for (var i = 0; i < validationResult.missingOptions.length; i++) {
+                var optionName = validationResult.missingOptions[i];
+                var defaultValue = defaultValues[optionName] || "''";
+                optionsToAdd.push("    option " + optionName + " '" + defaultValue + "'");
+            }
+            
+            // 在config节末尾插入选项
+            if (optionsToAdd.length > 0) {
+                var insertPosition = configEndIndex;
+                
+                // 如果config节是空的，添加一个空行
+                if (configLines[configEndIndex - 1].trim() === "") {
+                    configLines.splice(configEndIndex - 1, 0, ...optionsToAdd);
+                } else {
+                    configLines.splice(configEndIndex, 0, ...optionsToAdd);
+                }
+                
+                // 更新可编辑区域
+                var newConfig = configLines.join('\n');
+                editablePre.textContent = newConfig;
+                
+                // 同步到隐藏的textarea
+                document.getElementById('config-input-content').value = newConfig;
+                
+                // 应用语法高亮
+                applyEditableSyntaxHighlighting('config-input-highlight');
+                
+                // 重新校验
+                setTimeout(function() {
+                    validateConfig();
+                }, 100);
+                return;
+            }
+        }
+    }
+    
+    // 检查management接口
+    if (!validationResult.hasManagement) {
+        // 询问是否自动添加management接口
+        if (confirm('配置中没有找到management接口设置，这是连接状态页面正常运行所必需的。是否自动添加？')) {
+            var editablePre = document.getElementById('config-input-highlight');
+            var configLines = editablePre.textContent.split('\n');
+            
+            // 找到config节的结束位置
+            var configEndIndex = configLines.length;
+            for (var i = validationResult.configLineIndex + 1; i < configLines.length; i++) {
+                if (configLines[i].trim().startsWith("config ")) {
+                    configEndIndex = i;
+                    break;
+                }
+            }
+            
+            // 添加management选项到config节末尾
+            var managementOptions = [
+                '    option management \'127.0.0.1 7505\'',
+                '    option management_forget_disconnect \'1\''
+            ];
+            
+            // 在config节末尾插入选项
+            if (configLines[configEndIndex - 1].trim() === "") {
+                configLines.splice(configEndIndex - 1, 0, ...managementOptions);
+            } else {
+                configLines.splice(configEndIndex, 0, ...managementOptions);
+            }
+            
+            // 更新可编辑区域
+            var newConfig = configLines.join('\n');
+            editablePre.textContent = newConfig;
+            
+            // 同步到隐藏的textarea
+            document.getElementById('config-input-content').value = newConfig;
+            
+            // 应用语法高亮
+            applyEditableSyntaxHighlighting('config-input-highlight');
+            
+            // 重新校验
+            setTimeout(function() {
+                validateConfig();
+            }, 100);
+            return;
+        }
+    }
+    
+    alert("配置校验完成!");
+}
+
+// 保存配置（不应用）
+function saveConfig() {
+    var textarea = document.getElementById('config-input-content');
+    var configText = textarea.value.trim();
+    
+    if (!configText) {
+        alert('请输入配置内容');
+        return;
+    }
+    
+    // 先进行配置校验
+    var lines = configText.split('\n');
+    var hasConfigOpenvpn = false;
+    
+    // 检查第一行是否包含config openvpn
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (line.startsWith("config openvpn")) {
+            hasConfigOpenvpn = true;
+            break;
+        }
+    }
+    
+    if (!hasConfigOpenvpn) {
+        alert('错误: 配置必须包含config openvpn实例，并且必须在第一行！\n请先进行配置校验。');
+        return;
+    }
+    
+    if (!confirm('确认要保存配置吗？这将覆盖现有配置文件。\n\n配置文件路径: ' + openvpnConfigPath)) {
+        return;
+    }
+    
+    // 创建一个FormData对象来发送数据
+    var formData = new FormData();
+    formData.append('config', configText);
+    
+    // 使用fetch API发送请求
+    var url = '<%=dsp.build_url("admin/vpn/openvpn-admin/save_config")%>';
+    
+    fetch(url, {
+        method: 'POST',
+        body: formData
+    })
+    .then(function(response) {
+        if (response.ok) {
+            return response.json();
+        } else {
+            throw new Error('网络响应错误: ' + response.status);
+        }
+    })
+    .then(function(result) {
+        if (result.success) {
+            alert(result.message);
+            // 刷新显示
+            setTimeout(refreshConfig, 1000);
+        } else {
+            alert('保存失败: ' + result.message);
+        }
+    })
+    .catch(function(error) {
+        alert('保存失败: ' + error.message);
+    });
+}
+
+// 应用配置（保存并重启服务）
+function applyConfig() {
+    var textarea = document.getElementById('config-input-content');
+    var configText = textarea.value.trim();
+    
+    if (!configText) {
+        alert('请输入配置内容');
+        return;
+    }
+    
+    // 先进行配置校验
+    var lines = configText.split('\n');
+    var hasConfigOpenvpn = false;
+    
+    // 检查第一行是否包含config openvpn
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim();
+        if (line.startsWith("config openvpn")) {
+            hasConfigOpenvpn = true;
+            break;
+        }
+    }
+    
+    if (!hasConfigOpenvpn) {
+        alert('错误: 配置必须包含config openvpn实例，并且必须在第一行！\n请先进行配置校验。');
+        return;
+    }
+    
+    if (!confirm('确认要应用配置吗？这将保存配置并重启OpenVPN服务，可能会断开现有连接。\n\n配置文件路径: ' + openvpnConfigPath)) {
+        return;
+    }
+    
+    // 创建一个FormData对象来发送数据
+    var formData = new FormData();
+    formData.append('config', configText);
+    
+    // 使用fetch API发送请求
+    var url = '<%=dsp.build_url("admin/vpn/openvpn-admin/apply_config")%>';
+    
+    fetch(url, {
+        method: 'POST',
+        body: formData
+    })
+    .then(function(response) {
+        if (response.ok) {
+            return response.json();
+        } else {
+            throw new Error('网络响应错误: ' + response.status);
+        }
+    })
+    .then(function(result) {
+        if (result.success) {
+            alert(result.message);
+            // 跳转到状态页面
+            setTimeout(function() {
+                window.location.href = '<%=dsp.build_url("admin/vpn/openvpn-admin/status")%>';
+            }, 1500);
+        } else {
+            alert('应用失败: ' + result.message);
+        }
+    })
+    .catch(function(error) {
+        alert('应用失败: ' + error.message);
+    });
+}
+
+// 复位配置（重新加载页面）
+function resetConfig() {
+    if (configChanged) {
+        if (confirm('确认要复位吗？所有未保存的修改将会丢失。')) {
+            location.href = '<%=current_url%>';
+        }
+    } else {
+        location.href = '<%=current_url%>';
+    }
+}
+
+// 应用语法高亮（只读区域）
+function applySyntaxHighlighting(elementId) {
+    var pre = document.getElementById(elementId);
+    if (!pre) return;
+    
+    var content = pre.textContent;
+    
+    // 处理字符串（引号内的内容）
+    content = content.replace(/('.*?'|".*?")/g, function(match) {
+        return '<span class="string">' + match + '</span>';
+    });
+    
+    // 处理数字
+    content = content.replace(/\b(\d+)\b/g, function(match) {
+        return '<span class="number">' + match + '</span>';
+    });
+    
+    var keywords = ['config', 'option', 'list', 'enabled', 'port', 'proto', 'dev', 'server', 'client'];
+    
+    keywords.forEach(function(keyword) {
+        var regex = new RegExp('\\b(' + keyword + ')\\b', 'g');
+        content = content.replace(regex, function(match) {
+            return '<span class="keyword">' + match + '</span>';
+        });
+    });
+    
+    pre.innerHTML = content;
+}
+
+// 应用语法高亮（可编辑区域）
+function applyEditableSyntaxHighlighting(elementId) {
+    var pre = document.getElementById(elementId);
+    if (!pre) return;
+    
+    // 保存当前光标位置
+    var selection = window.getSelection();
+    var range = null;
+    if (selection.rangeCount > 0) {
+        range = selection.getRangeAt(0).cloneRange();
+    }
+    
+    var content = pre.textContent;
+    
+    // 处理字符串（引号内的内容）
+    content = content.replace(/('.*?'|".*?")/g, function(match) {
+        return '<span class="string">' + match + '</span>';
+    });
+    
+    // 处理数字
+    content = content.replace(/\b(\d+)\b/g, function(match) {
+        return '<span class="number">' + match + '</span>';
+    });
+    
+    var keywords = ['config', 'option', 'list', 'enabled', 'port', 'proto', 'dev', 'server', 'client'];
+    
+    keywords.forEach(function(keyword) {
+        var regex = new RegExp('\\b(' + keyword + ')\\b', 'g');
+        content = content.replace(regex, function(match) {
+            return '<span class="keyword">' + match + '</span>';
+        });
+    });
+    
+    pre.innerHTML = content;
+    
+    // 恢复光标位置
+    if (range) {
+        selection.removeAllRanges();
+        selection.addRange(range);
+    }
+}
+
+//]]>
+</script>
+
+<%+footer%>
