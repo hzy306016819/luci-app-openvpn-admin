@@ -26,7 +26,7 @@ define Package/$(PKG_NAME)
   CATEGORY:=LuCI
   SUBMENU:=3. Applications
   TITLE:=OpenVPN Management Interface
-  URL:=https://github.com/YOUR_USERNAME/luci-app-openvpn-admin
+  URL:=https://github.com/hzy306016819/luci-app-openvpn-admin
   PKGARCH:=all
   # 依赖关系
   DEPENDS:= \
