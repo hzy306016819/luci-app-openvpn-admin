@@ -46,3 +46,32 @@
 3. 上传并安装 IPK 文件：
    ```bash
    opkg install luci-app-openvpn-admin_*.ipk
+
+# 插件目录结构
+
+```plaintext
+luci-app-openvpn-admin/
+├── luasrc/
+│   ├── controller/
+│   │   └── openvpn-admin.lua
+│   └── view/
+│       └── openvpn-admin/
+│           ├── client.htm
+│           ├── logs.htm
+│           ├── server.htm
+│           ├── settings.htm
+│           └── status.htm
+├── root/
+│   ├── etc/
+│   │   ├── config/
+│   │   │   └── openvpn-admin
+│   │   └── openvpn-admin/
+│   │       ├── clean-garbage.sh
+│   │       ├── client-connect-cn.sh
+│   │       ├── generate-client.sh
+│   │       ├── renewcert.sh
+│   │       └── template/
+│   │           └── server.template
+└── Makefile
+```
+
