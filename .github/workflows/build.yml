@@ -1,169 +1,123 @@
 name: Build luci-app-openvpn-admin (360T7 only)
-
-on:
-  workflow_dispatch:
+on: [workflow_dispatch]
 
 jobs:
-  build:
+  build-360t7:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
+    env:
+      MAKE_JOBS: 2
+      SDK_URL: "https://downloads.immortalwrt.org/releases/23.05.0/targets/rockchip/armv8/immortalwrt-sdk-23.05.0-rockchip-armv8_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+      DEPENDENCIES: "openssl-util curl easy-rsa netcat-openbsd openvpn-openssl luci-lib-jsonc luci-compat luci-base"
 
     steps:
-    - name: 1检出代码
-      uses: actions/checkout@v4
+      - name: 1. Checkout code
+        uses: actions/checkout@v4
 
-    - name: 2安装完整依赖工具
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          libncurses5-dev \
-          gawk \
-          git \
-          wget \
-          unzip \
-          python3 \
-          python3-pip \
-          file \
-          rsync \
-          curl \
-          python3-pyelftools
-        sudo pip3 install pyelftools || true
+      - name: 2. Install build dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y build-essential libncurses5-dev gawk git wget unzip python3 python3-pip file rsync curl python3-pyelftools subversion time
+          sudo pip3 install pyelftools || true
 
-    - name: 3下载ImmortalWrt SDK（360T7专属）
-      id: download_sdk
-      run: |
-        echo "下载 360T7 (aarch64_cortex-a72) 架构的SDK..."
-        MIRRORS=(
-          "https://downloads.immortalwrt.org/releases/23.05.0"
-          "https://mirrors.pku.edu.cn/immortalwrt/releases/23.05.0"
-        )
-        SDK_SUBPATH="targets/rockchip/armv8/immortalwrt-sdk-23.05.0-rockchip-armv8_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
-        
-        for MIRROR in "${MIRRORS[@]}"; do
-          SDK_URL="${MIRROR}/${SDK_SUBPATH}"
-          echo "尝试从: $SDK_URL"
-          if wget --timeout=30 --tries=3 "$SDK_URL" -O openwrt-sdk.tar.xz; then
-            echo "✅ 下载成功"
-            break
+      - name: 3. Download & extract ImmortalWrt SDK
+        id: sdk
+        run: |
+          wget --timeout=60 --tries=3 $SDK_URL -O sdk.tar.xz || { echo "SDK download failed"; exit 1; }
+          tar xf sdk.tar.xz && mv $(find . -maxdepth 1 -type d -name "*sdk*" | head -1) openwrt-sdk
+          ls -la openwrt-sdk/
+
+      - name: 4. Prepare package files
+        run: |
+          cd openwrt-sdk
+          rm -rf package/luci-app-openvpn-admin && mkdir -p $_
+          [ -f ../Makefile ] && cp ../Makefile package/luci-app-openvpn-admin/
+          [ -d ../files ] && [ "$(ls -A ../files)" ] && cp -r ../files/* package/luci-app-openvpn-admin/
+          [ -d ../package/luci-app-openvpn-admin ] && cp -r ../package/luci-app-openvpn-admin/* package/luci-app-openvpn-admin/
+          mkdir -p package/luci-app-openvpn-admin/{usr/lib/lua/luci/{controller,view/openvpn-admin},etc/{config,openvpn-admin/template}}
+          find package/luci-app-openvpn-admin -type f | head -20
+
+      - name: 5. Update feeds & install dependencies
+        run: |
+          cd openwrt-sdk
+          ./scripts/feeds update -a
+          ./scripts/feeds install luci-base luci-lib-jsonc luci-compat openvpn-openssl easy-rsa netcat-openbsd curl openssl-util
+
+      - name: 6. Generate .config
+        run: |
+          cd openwrt-sdk
+          cat > .config << EOF
+          CONFIG_TARGET_rockchip=y
+          CONFIG_TARGET_rockchip_armv8=y
+          CONFIG_TARGET_DEVICE_packages=y
+          CONFIG_PACKAGE_luci-app-openvpn-admin=y
+          CONFIG_PACKAGE_luci-base=y
+          CONFIG_PACKAGE_luci-lib-jsonc=y
+          CONFIG_PACKAGE_luci-compat=y
+          CONFIG_PACKAGE_openvpn-openssl=y
+          CONFIG_OPENVPN_OPENSSL_ENABLE_MANAGEMENT=y
+          CONFIG_OPENVPN_OPENSSL_ENABLE_LZO=y
+          CONFIG_OPENVPN_OPENSSL_ENABLE_LZ4=y
+          CONFIG_PACKAGE_easy-rsa=y
+          CONFIG_PACKAGE_netcat-openbsd=y
+          CONFIG_PACKAGE_curl=y
+          CONFIG_PACKAGE_openssl-util=y
+          CONFIG_ALL=n
+          CONFIG_ALL_KMODS=n
+          CONFIG_ALL_NONSHARED=n
+          EOF
+          make defconfig
+          grep -E "CONFIG_TARGET|CONFIG_PACKAGE|CONFIG_OPENVPN" .config
+
+      - name: 7. Compile dependencies (fail ignore)
+        run: |
+          cd openwrt-sdk
+          for pkg in $DEPENDENCIES; do
+            echo "==== Compiling $pkg ===="
+            if [ -d "package/$pkg" ] || [ -d "feeds/packages/$pkg" ] || [ -d "feeds/luci/$pkg" ]; then
+              make package/$pkg/compile V=sc -j$MAKE_JOBS || echo "⚠ $pkg compile failed, skip"
+            else
+              echo "⚠ $pkg not found, skip"
+            fi
+          done
+
+      - name: 8. Compile main package
+        run: |
+          cd openwrt-sdk
+          [ ! -d "package/luci-app-openvpn-admin" ] && { echo "Package dir missing"; exit 1; }
+          make package/luci-app-openvpn-admin/clean
+          time make package/luci-app-openvpn-admin/compile V=s -j$MAKE_JOBS
+          find bin -name "*luci-app-openvpn-admin*" -type f
+
+      - name: 9. Collect artifacts
+        run: |
+          cd openwrt-sdk
+          mkdir -p ../output-360T7
+          find bin -name "*.ipk" -exec cp {} ../output-360T7/ \;
+          MAIN_IPK=$(find bin -name "*luci-app-openvpn-admin*.ipk" | head -1)
+          if [ -n "$MAIN_IPK" ]; then
+            echo "✅ Success: $(basename $MAIN_IPK)"
+            tar -tzf $MAIN_IPK | grep -E "(controller|view|etc/config)" | head -10
           else
-            echo "❌ 下载失败，尝试下一个镜像..."
-            rm -f openwrt-sdk.tar.xz
+            echo "❌ Main package not found"
+            find bin -name "*.ipk" | xargs -I {} basename {} | sort
           fi
-        done
-        
-        if [ ! -f "openwrt-sdk.tar.xz" ]; then
-          echo "❌ 所有镜像都下载失败"
-          exit 1
-        fi
-        
-        tar -xf openwrt-sdk.tar.xz
-        mv immortalwrt-sdk-* openwrt-sdk
+          ls -lh ../output-360T7/
 
-    - name: 4准备包文件
-      run: |
-        cd openwrt-sdk
-        mkdir -p package/luci-app-openvpn-admin
-        if [ -d "../package/luci-app-openvpn-admin" ]; then
-          cp -r ../package/luci-app-openvpn-admin/* package/luci-app-openvpn-admin/
-        fi
-        if [ -d "../files" ]; then
-          cp -r ../files/* package/luci-app-openvpn-admin/
-        fi
-        echo "检查文件结构:"
-        find package/luci-app-openvpn-admin -type f | head -20
+      - name: 10. Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openvpn-admin-360T7
+          path: output-360T7/
+          retention-days: 7
 
-    - name: 5配置feeds并安装依赖包
-      run: |
-        cd openwrt-sdk
-        ./scripts/feeds update -a || true
-        ./scripts/feeds install -a || true
-        # 安装插件依赖（失败忽略）
-        ./scripts/feeds install easy-rsa netcat-openbsd openvpn-openssl luci-lib-jsonc luci-compat curl openssl-util || true
-
-    - name: 6配置构建（仅360T7）
-      run: |
-        cd openwrt-sdk
-        cat > .config << EOF
-        CONFIG_TARGET_rockchip-armv8=y
-        CONFIG_PACKAGE_luci-app-openvpn-admin=y
-        CONFIG_PACKAGE_easy-rsa=y
-        CONFIG_PACKAGE_netcat-openbsd=y
-        CONFIG_PACKAGE_openvpn-openssl=y
-        CONFIG_PACKAGE_luci-lib-jsonc=y
-        CONFIG_PACKAGE_luci-compat=y
-        CONFIG_PACKAGE_curl=y
-        CONFIG_PACKAGE_openssl-util=y
-        EOF
-        make defconfig || true
-
-    - name: 7编译主插件（核心，失败则终止）
-      run: |
-        cd openwrt-sdk
-        echo "开始编译 360T7 专属插件..."
-        # 主插件编译失败则终止，依赖失败忽略
-        make package/luci-app-openvpn-admin/compile V=s IGNORE_ERRORS=1 -j$(nproc)
-        # 检查主插件是否编译成功
-        if [ -z "$(find bin/packages -name "luci-app-openvpn-admin*.ipk" -type f)" ]; then
-          echo "❌ 主插件编译失败"
-          exit 1
-        fi
-
-    - name: 8尝试编译依赖包（失败忽略）
-      run: |
-        cd openwrt-sdk
-        echo "尝试编译依赖包（失败忽略）..."
-        # 每个依赖编译失败都忽略，不影响主流程
-        make package/easy-rsa/compile V=s IGNORE_ERRORS=1 || echo "⚠ easy-rsa 编译失败，忽略"
-        make package/netcat-openbsd/compile V=s IGNORE_ERRORS=1 || echo "⚠ netcat-openbsd 编译失败，忽略"
-        make package/openvpn-openssl/compile V=s IGNORE_ERRORS=1 || echo "⚠ openvpn-openssl 编译失败，忽略"
-
-    - name: 9收集产物（优先主插件）
-      run: |
-        cd openwrt-sdk
-        mkdir -p ../output-360T7
-        
-        # 必收集主插件
-        MAIN_IPK=$(find bin/packages -name "luci-app-openvpn-admin*.ipk" -type f | head -1)
-        if [ -n "$MAIN_IPK" ]; then
-          cp "$MAIN_IPK" ../output-360T7/
-          echo "✅ 主插件 IPK 已收集"
-        fi
-        
-        # 尝试收集依赖（失败仅提示）
-        for pkg in easy-rsa netcat-openbsd openvpn-openssl luci-lib-jsonc curl openssl-util; do
-          DEP_IPK=$(find bin/packages -name "${pkg}*.ipk" -type f | head -1)
-          if [ -n "$DEP_IPK" ]; then
-            cp "$DEP_IPK" ../output-360T7/
-            echo "✅ 依赖 $pkg IPK 已收集"
-          else
-            echo "⚠ 依赖 $pkg IPK 未找到/编译失败，忽略"
-          fi
-        done
-        
-        ls -lh ../output-360T7/
-
-    - name: 10上传360T7专属产物
-      uses: actions/upload-artifact@v4
-      with:
-        name: openvpn-admin-360T7
-        path: output-360T7/*.ipk
-        retention-days: 7
-
-    - name: 11构建状态
-      if: always()
-      run: |
-        echo "========================================"
-        echo "构建状态报告 - 360T7 (aarch64_cortex-a72)"
-        echo "========================================"
-        echo "作业状态: ${{ job.status }}"
-        echo "SDK下载状态: ${{ steps.download_sdk.outcome }}"
-        echo ""
-        
-        if [ -f "$(find output-360T7 -name "luci-app-openvpn-admin*.ipk")" ]; then
-          echo "✅ 核心插件编译成功！"
-          echo "📦 产物包含:"
-          ls -lh output-360T7/
-        else
-          echo "❌ 核心插件编译失败"
-        fi
+      - name: 11. Build report
+        if: always()
+        run: |
+          echo "==== Build Report for 360T7 ===="
+          echo "Job status: ${{ job.status }}"
+          echo "SDK status: ${{ steps.sdk.outcome }}"
+          [ -d output-360T7 ] && ls -la output-360T7/ || echo "Output dir missing"
+          IPK_COUNT=$(find output-360T7 -name "*.ipk" | wc -l)
+          echo "Total IPKs: $IPK_COUNT"
+          MAIN_IPK=$(find output-360T7 -name "*luci-app-openvpn-admin*.ipk" | head -1)
+          [ -n "$MAIN_IPK" ] && echo "✅ Main package: $(basename $MAIN_IPK)" || echo "❌ Build failed"
