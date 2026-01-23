@@ -1,161 +1,293 @@
-name: Build luci-app-openvpn-admin (360T7)
-on: [workflow_dispatch]
+# OpenWrt/LEDE/ImmortalWrt 包构建 Makefile
+# 作者: [hzy306016819]
+# 版本: 1.0.0
+# 描述: OpenVPN 管理插件包定义，用于 OpenWrt 构建系统
 
-jobs:
-  build-360t7:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 180
-    env:
-      MAKE_JOBS: 2
-      SDK_URL: "https://downloads.immortalwrt.org/releases/23.05.0/targets/rockchip/armv8/immortalwrt-sdk-23.05.0-rockchip-armv8_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
-      # 关键修改1：移除 SDK 中找不到的依赖（easy-rsa/netcat-openbsd）
-      DEPENDENCIES: "openssl-util curl openvpn-openssl luci-lib-jsonc luci-compat luci-base"
+include $(TOPDIR)/rules.mk
 
-    steps:
-      - name: 1. Checkout code
-        uses: actions/checkout@v4
+# 包信息
+PKG_NAME:=luci-app-openvpn-admin
+PKG_VERSION:=1.0.0
+PKG_RELEASE:=1
 
-      - name: 2. Install build dependencies
-        run: |
-          sudo apt-get update && sudo apt-get install -y build-essential libncurses5-dev gawk git wget unzip python3 python3-pip file rsync curl python3-pyelftools subversion time
-          sudo pip3 install pyelftools || true
+# OpenWrt 构建目录
+PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 
-      - name: 3. Download & extract ImmortalWrt SDK
-        id: sdk
-        run: |
-          wget --timeout=60 --tries=3 $SDK_URL -O sdk.tar.xz || { echo "SDK download failed"; exit 1; }
-          tar xf sdk.tar.xz && mv $(find . -maxdepth 1 -type d -name "*sdk*" | head -1) openwrt-sdk
-          ls -la openwrt-sdk/
+# 包含 OpenWrt 包宏（关键修正1：删除重复的 include，避免规则冲突）
+include $(INCLUDE_DIR)/package.mk
 
-      - name: 4. Prepare package files (关键修改2：适配新的目录结构)
-        run: |
-          cd openwrt-sdk
-          # 清理旧目录，创建新目录
-          rm -rf package/luci-app-openvpn-admin && mkdir -p package/luci-app-openvpn-admin
-          # 复制修正后的 Makefile
-          [ -f ../Makefile ] && cp ../Makefile package/luci-app-openvpn-admin/
-          # 复制 luasrc/root 目录（新结构），而非 files 目录
-          [ -d ../luasrc ] && cp -r ../luasrc package/luci-app-openvpn-admin/
-          [ -d ../root ] && cp -r ../root package/luci-app-openvpn-admin/
-          # 兼容旧 files 目录（可选，防止用户还没调整目录）
-          if [ -d ../files ]; then
-            mkdir -p package/luci-app-openvpn-admin/root
-            cp -r ../files/* package/luci-app-openvpn-admin/root/
-          fi
-          # 验证目录结构
-          echo "==== Package dir structure ===="
-          find package/luci-app-openvpn-admin -type d | sort | head -20
+# 定义 LuCI 包宏（关键修正2：luci.mk 需在 package.mk 之后，且不重复包含）
+include $(TOPDIR)/feeds/luci/luci.mk
 
-      - name: 5. Update feeds & install dependencies (关键修改3：跳过找不到的依赖)
-        run: |
-          cd openwrt-sdk
-          ./scripts/feeds update -a -f  # 强制刷新 feeds
-          # 只安装能找到的依赖，easy-rsa/netcat-openbsd 跳过
-          ./scripts/feeds install luci-base luci-lib-jsonc luci-compat openvpn-openssl curl openssl-util || true
-          # 检查依赖是否安装成功
-          echo "==== Installed feeds ===="
-          ./scripts/feeds list | grep -E "luci|openvpn|curl"
+# 包定义
+define Package/$(PKG_NAME)
+  SECTION:=luci
+  CATEGORY:=LuCI
+  SUBMENU:=3. Applications
+  TITLE:=OpenVPN Management Interface
+  URL:=https://github.com/YOUR_USERNAME/luci-app-openvpn-admin
+  PKGARCH:=all
+  # 依赖关系（关键修正3：注释 SDK 中找不到的依赖，设备上手动安装）
+  DEPENDS:= \
+    +luci-base \
+    +openvpn-openssl \
+    +luci-lib-jsonc \
+    # +easy-rsa \  # 设备上执行 opkg install easy-rsa 补充
+    +curl \
+    +openssl-util \
+    # +netcat-openbsd \  # 设备上执行 opkg install netcat-openbsd 补充
+    +luci-compat
+endef
 
-      - name: 6. Generate .config (关键修改4：注释掉找不到的依赖配置)
-        run: |
-          cd openwrt-sdk
-          cat > .config << EOF
-          CONFIG_TARGET_rockchip=y
-          CONFIG_TARGET_rockchip_armv8=y
-          CONFIG_TARGET_DEVICE_packages=y
-          CONFIG_PACKAGE_luci-app-openvpn-admin=y
-          CONFIG_PACKAGE_luci-base=y
-          CONFIG_PACKAGE_luci-lib-jsonc=y
-          CONFIG_PACKAGE_luci-compat=y
-          CONFIG_PACKAGE_openvpn-openssl=y
-          CONFIG_OPENVPN_OPENSSL_ENABLE_MANAGEMENT=y
-          CONFIG_OPENVPN_OPENSSL_ENABLE_LZO=y
-          CONFIG_OPENVPN_OPENSSL_ENABLE_LZ4=y
-          # CONFIG_PACKAGE_easy-rsa is not set  # SDK 中不存在，注释
-          # CONFIG_PACKAGE_netcat-openbsd is not set  # SDK 中不存在，注释
-          CONFIG_PACKAGE_curl=y
-          CONFIG_PACKAGE_openssl-util=y
-          CONFIG_ALL=n
-          CONFIG_ALL_KMODS=n
-          CONFIG_ALL_NONSHARED=n
-          EOF
-          make defconfig
-          grep -E "CONFIG_TARGET|CONFIG_PACKAGE|CONFIG_OPENVPN" .config
+# 包描述
+define Package/$(PKG_NAME)/description
+  A comprehensive OpenVPN management interface for OpenWrt/LEDE/ImmortalWrt.
+  
+  Features include:
+  - Real-time connection monitoring
+  - Client configuration generation
+  - Server configuration management
+  - Client blacklist (based on CN)
+  - Certificate management
+  - Live traffic statistics
+  - Log viewer with filtering
+  
+  一个功能完整的 OpenVPN 管理界面，包含：
+  - 实时连接监控
+  - 客户端配置生成
+  - 服务器配置管理
+  - 客户端黑名单（基于CN）
+  - 证书管理
+  - 实时流量统计
+  - 带过滤功能的日志查看器
+endef
 
-      - name: 7. Compile dependencies (关键修改5：容错编译，失败不中断)
-        run: |
-          cd openwrt-sdk
-          for pkg in $DEPENDENCIES; do
-            echo "==== Compiling $pkg ===="
-            pkg_path=$(find package feeds -name $pkg -type d | head -1)
-            if [ -n "$pkg_path" ]; then
-              # 容错编译，失败仅警告
-              make package/$pkg/compile V=sc -j$MAKE_JOBS || echo "⚠ $pkg compile failed, skip (non-critical)"
-            else
-              echo "⚠ $pkg not found in feeds, skip"
-            fi
-          done
+# 构建准备阶段
+define Build/Prepare
+	# 创建构建目录
+	mkdir -p $(PKG_BUILD_DIR)
+	
+	# 复制所有文件到构建目录（关键修正4：使用 $(CP) 而非 ./files/*，适配 SDK 目录结构）
+	$(CP) ./luasrc $(PKG_BUILD_DIR)/
+	$(CP) ./htdocs $(PKG_BUILD_DIR)/ 2>/dev/null || true
+	$(CP) ./root $(PKG_BUILD_DIR)/ 2>/dev/null || true
+	
+	# 确保脚本有执行权限（修正路径：适配 root/etc 目录结构）
+	chmod +x $(PKG_BUILD_DIR)/root/etc/openvpn-admin/*.sh 2>/dev/null || true
+endef
 
-      - name: 8. Compile main package (关键修改6：增加调试日志 + 容错)
-        run: |
-          cd openwrt-sdk
-          [ ! -d "package/luci-app-openvpn-admin" ] && { echo "Package dir missing"; exit 1; }
-          # 清理旧构建文件
-          make package/luci-app-openvpn-admin/clean
-          # 编译并输出详细日志，失败保留日志
-          make package/luci-app-openvpn-admin/compile V=s -j$MAKE_JOBS 2>&1 | tee compile-log.txt
-          # 检查编译结果
-          MAIN_IPK=$(find bin -name "*luci-app-openvpn-admin*.ipk" -type f | head -1)
-          if [ -z "$MAIN_IPK" ]; then
-            echo "==== Compile log (last 100 lines) ===="
-            tail -100 compile-log.txt
-            echo "❌ Main package compile failed"
-            exit 1
-          else
-            echo "✅ Main package compiled: $MAIN_IPK"
-          fi
+# 构建配置阶段
+define Build/Configure
+	# 不需要配置
+endef
 
-      - name: 9. Collect artifacts
-        run: |
-          cd openwrt-sdk
-          mkdir -p ../output-360T7
-          # 复制所有 IPK（包括依赖）
-          find bin -name "*.ipk" -exec cp {} ../output-360T7/ \;
-          # 验证主插件 IPK
-          MAIN_IPK=$(find ../output-360T7 -name "*luci-app-openvpn-admin*.ipk" | head -1)
-          if [ -n "$MAIN_IPK" ]; then
-            echo "✅ Success: $(basename $MAIN_IPK)"
-            # 查看 IPK 内容（验证目录结构）
-            tar -tzf $MAIN_IPK | grep -E "(controller|view|etc/config)" | head -10
-          else
-            echo "❌ Main package not found in output"
-            ls -lh ../output-360T7/
-            exit 1
-          fi
+# 构建编译阶段
+define Build/Compile
+	# LuCI 应用不需要编译
+endef
 
-      - name: 10. Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: openvpn-admin-360T7
-          path: output-360T7/
-          retention-days: 7
+# 安装到目标文件系统（关键修正5：使用 LuCI 标准安装宏，避免目录创建语法错误）
+define Package/$(PKG_NAME)/install
+	# 安装 LuCI 控制器（使用 luci.mk 提供的标准宏）
+	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/controller
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luasrc/controller/openvpn-admin.lua \
+		$(1)/usr/lib/lua/luci/controller/openvpn-admin.lua
+	
+	# 安装 LuCI 视图文件
+	$(INSTALL_DIR) $(1)/usr/lib/lua/luci/view/openvpn-admin
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luasrc/view/openvpn-admin/*.htm \
+		$(1)/usr/lib/lua/luci/view/openvpn-admin/
+	
+	# 安装配置文件和脚本（适配 root/etc 目录结构）
+	$(INSTALL_DIR) $(1)/etc/config
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/root/etc/config/openvpn-admin \
+		$(1)/etc/config/openvpn-admin
+	
+	$(INSTALL_DIR) $(1)/etc/openvpn-admin
+	$(INSTALL_DIR) $(1)/etc/openvpn-admin/template
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/root/etc/openvpn-admin/*.sh \
+		$(1)/etc/openvpn-admin/
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/root/etc/openvpn-admin/template/server.template \
+		$(1)/etc/openvpn-admin/template/
+	
+	# 创建运行时目录
+	$(INSTALL_DIR) $(1)/tmp/openvpn-admin
+	$(INSTALL_DIR) $(1)/etc/openvpn/pki
+	
+	# 创建初始配置文件（如果模板不存在）
+	if [ ! -f $(PKG_BUILD_DIR)/root/etc/openvpn-admin/template/server.template ]; then \
+		mkdir -p $(1)/etc/openvpn-admin/template; \
+		echo "config openvpn 'myvpn'" > $(1)/etc/openvpn-admin/template/server.template; \
+		echo "    option enabled '1'" >> $(1)/etc/openvpn-admin/template/server.template; \
+		echo "    option port '1194'" >> $(1)/etc/openvpn-admin/template/server.template; \
+		echo "    option proto 'udp'" >> $(1)/etc/openvpn-admin/template/server.template; \
+		echo "    option dev 'tun'" >> $(1)/etc/openvpn-admin/template/server.template; \
+		echo "    option management '127.0.0.1 7505'" >> $(1)/etc/openvpn-admin/template/server.template; \
+	fi
+	
+	# 创建空的历史和黑名单文件
+	echo '[]' > $(1)/etc/openvpn-admin/openvpn_connection_history.json
+	echo '{"version": 1, "entries": []}' > $(1)/etc/openvpn-admin/blacklist.json
+	
+	# 设置目录权限
+	chmod 755 $(1)/etc/openvpn-admin
+	chmod 755 $(1)/tmp/openvpn-admin
+	chmod 755 $(1)/etc/openvpn/pki
+endef
 
-      - name: 11. Build report
-        if: always()
-        run: |
-          echo "========================================"
-          echo "构建状态报告 - 360T7 (aarch64_cortex-a72)"
-          echo "========================================"
-          echo "作业状态: ${{ job.status }}"
-          echo "SDK下载状态: ${{ steps.sdk.outcome }}"
-          echo ""
-          if [ -d output-360T7 ]; then
-            IPK_COUNT=$(find output-360T7 -name "*.ipk" | wc -l)
-            echo "📦 生成的IPK数量: $IPK_COUNT"
-            echo "📋 IPK列表:"
-            ls -lh output-360T7/
-            MAIN_IPK=$(find output-360T7 -name "*luci-app-openvpn-admin*.ipk" | head -1)
-            [ -n "$MAIN_IPK" ] && echo "✅ 核心插件: $(basename $MAIN_IPK)" || echo "❌ 核心插件编译失败"
-          else
-            echo "❌ 输出目录不存在"
-          fi
+# 后安装脚本（安装后执行）
+define Package/$(PKG_NAME)/postinst
+#!/bin/sh
+# 只在真实系统上运行，不在交叉编译环境中运行
+if [ -z "$${IPKG_INSTROOT}" ]; then
+	echo "=========================================="
+	echo "  OpenVPN 管理插件安装完成！"
+	echo "=========================================="
+	echo ""
+	
+	# 创建必要的运行时目录
+	mkdir -p /etc/openvpn-admin/template 2>/dev/null
+	mkdir -p /tmp/openvpn-admin 2>/dev/null
+	mkdir -p /etc/openvpn/pki 2>/dev/null
+	
+	# 设置脚本执行权限
+	chmod 755 /etc/openvpn-admin/*.sh 2>/dev/null || true
+	
+	# 初始化 UCI 配置（如果不存在）
+	if ! uci -q get openvpn-admin.@settings[0] >/dev/null 2>&1; then
+		echo "初始化插件配置..."
+		
+		uci batch << 'EOF'
+# 创建 settings 节
+set openvpn-admin.settings=settings
+
+# 基本设置
+set openvpn-admin.settings.openvpn_instance='myvpn'
+set openvpn-admin.settings.openvpn_config_path='/etc/config/openvpn'
+
+# 状态页面设置
+set openvpn-admin.settings.refresh_enabled='1'
+set openvpn-admin.settings.refresh_interval='1'
+set openvpn-admin.settings.history_size='20'
+
+# 黑名单设置
+set openvpn-admin.settings.blacklist_enabled='1'
+set openvpn-admin.settings.blacklist_duration='300'
+set openvpn-admin.settings.blacklist_file='/etc/openvpn-admin/blacklist.json'
+
+# 文件路径设置
+set openvpn-admin.settings.log_file='/tmp/openvpn.log'
+set openvpn-admin.settings.history_file='/etc/openvpn-admin/openvpn_connection_history.json'
+set openvpn-admin.settings.easyrsa_dir='/etc/easy-rsa'
+set openvpn-admin.settings.easyrsa_pki='/etc/easy-rsa/pki'
+set openvpn-admin.settings.openvpn_pki='/etc/openvpn/pki'
+
+# 日志页面设置
+set openvpn-admin.settings.logs_refresh_enabled='1'
+set openvpn-admin.settings.logs_refresh_interval='10'
+set openvpn-admin.settings.logs_display_lines='1000'
+
+# 脚本路径设置
+set openvpn-admin.settings.generate_client_script='/etc/openvpn-admin/generate-client.sh'
+set openvpn-admin.settings.renew_cert_script='/etc/openvpn-admin/renewcert.sh'
+
+# 临时文件管理
+set openvpn-admin.settings.temp_dir='/tmp/openvpn-admin'
+set openvpn-admin.settings.clean_garbage_enabled='0'
+set openvpn-admin.settings.clean_garbage_time='4:50'
+set openvpn-admin.settings.clean_garbage_script='/etc/openvpn-admin/clean-garbage.sh'
+set openvpn-admin.settings.server_template_path='/etc/openvpn-admin/template/server.template'
+
+# 提交更改
+commit openvpn-admin
+EOF
+		
+		echo "插件配置初始化完成。"
+	fi
+	
+	# 检查并提示安装缺失的依赖
+	if ! opkg list-installed | grep -q easy-rsa; then
+		echo "⚠ 警告: EasyRSA 未安装，建议执行：opkg install easy-rsa"
+	fi
+	if ! opkg list-installed | grep -q netcat-openbsd; then
+		echo "⚠ 警告: netcat-openbsd 未安装，建议执行：opkg install netcat-openbsd"
+	fi
+	
+	# 检查 OpenVPN 服务
+	if [ -f "/etc/init.d/openvpn" ]; then
+		echo "检测到 OpenVPN 服务。"
+	else
+		echo "⚠ 警告: OpenVPN 服务未安装，建议执行：opkg install openvpn-openssl"
+	fi
+	
+	# 重新加载 LuCI
+	/etc/init.d/uhttpd reload >/dev/null 2>&1 || true
+	/etc/init.d/rpcd reload >/dev/null 2>&1 || true
+	
+	echo ""
+	echo "访问地址: LuCI → VPN → OpenVPN 管理"
+	echo ""
+	echo "首次使用建议:"
+	echo "  1. 检查设置页面，确保配置正确"
+	echo "  2. 在客户端页面生成第一个客户端配置"
+	echo "  3. 在状态页面查看连接状态"
+	echo ""
+fi
+exit 0
+endef
+
+# 预删除脚本（删除前执行）
+define Package/$(PKG_NAME)/prerm
+#!/bin/sh
+# 只在真实系统上运行
+if [ -z "$${IPKG_INSTROOT}" ]; then
+	echo "正在卸载 OpenVPN 管理插件..."
+	
+	# 停止相关的 cron 任务（如果有）
+	if [ -f "/etc/crontabs/root" ]; then
+		echo "清理 cron 任务..."
+		sed -i '/openvpn-admin/d' /etc/crontabs/root 2>/dev/null || true
+		/etc/init.d/cron restart 2>/dev/null || true
+	fi
+	
+	# 清理临时文件（可选）
+	# rm -rf /tmp/openvpn-admin/* 2>/dev/null || true
+	
+	echo "插件卸载准备完成。"
+fi
+exit 0
+endef
+
+# 后删除脚本（删除后执行）
+define Package/$(PKG_NAME)/postrm
+#!/bin/sh
+# 只在真实系统上运行
+if [ -z "$${IPKG_INSTROOT}" ]; then
+	echo "OpenVPN 管理插件已卸载。"
+	
+	# 重新加载 LuCI
+	/etc/init.d/uhttpd reload >/dev/null 2>&1 || true
+	
+	# 询问是否删除配置文件（可选）
+	# read -p "是否删除插件配置文件？(y/N): " choice
+	# case "$$choice" in
+	#   y|Y) rm -f /etc/config/openvpn-admin ;;
+	#   *) echo "配置文件保留在 /etc/config/openvpn-admin" ;;
+	# esac
+fi
+exit 0
+endef
+
+# 调用 OpenWrt 包构建宏
+$(eval $(call BuildPackage,$(PKG_NAME)))
+
+# 构建信息（调试用）
+define Build/ShowInfo
+	@echo "=========================================="
+	@echo "  构建信息: $(PKG_NAME)"
+	@echo "=========================================="
+	@echo "  版本: $(PKG_VERSION)-$(PKG_RELEASE)"
+	@echo "  构建目录: $(PKG_BUILD_DIR)"
+	@echo "  依赖包: $(DEPENDS)"
+	@echo "=========================================="
+endef
