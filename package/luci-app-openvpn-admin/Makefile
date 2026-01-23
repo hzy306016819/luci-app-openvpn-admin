@@ -17,7 +17,7 @@ PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 include $(INCLUDE_DIR)/package.mk
 
 # 定义 LuCI 包宏
-include $(INCLUDE_DIR)/package.mk
+# 删除重复的 include $(INCLUDE_DIR)/package.mk，改为包含 luci.mk
 include $(TOPDIR)/feeds/luci/luci.mk
 
 # 包定义
