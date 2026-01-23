@@ -1,4 +1,4 @@
-name: Build luci-app-openvpn-admin (360T7 only)
+name: Build luci-app-openvpn-admin (360T7)
 on: [workflow_dispatch]
 
 jobs:
