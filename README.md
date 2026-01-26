@@ -6,8 +6,7 @@
 
 一个功能完整的 OpenVPN 管理界面插件，适用于 OpenWrt/LEDE/ImmortalWrt 系统。
 ## 重要提示：openvpn-openssl必须带MANAGEMENT管理接口
-### 编译文件CONFIG_OPENVPN_openssl_ENABLE_MANAGEMENT=y
-### 或在make menuconfig -> Network -> VPN -> openvpn-openssl [*] Enable management server support把这个选上
+- 编译文件CONFIG_OPENVPN_openssl_ENABLE_MANAGEMENT=y 或在 make menuconfig -> Network -> VPN -> openvpn-openssl [*] Enable management server support把这个选上
 
 ## 功能特性
 
