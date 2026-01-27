@@ -1,0 +1,211 @@
+name: 编译 luci-app-openvpn-admin (X86_64)
+on: 
+  workflow_dispatch:  # 手动运行，不自动触发
+
+jobs:
+  build-x86:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      MAKE_JOBS: 4
+      SDK_URL: "https://downloads.immortalwrt.org/releases/23.05.0/targets/x86/64/immortalwrt-sdk-23.05.0-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+      DEPENDENCIES: "openssl-util curl openvpn-openssl luci-lib-jsonc luci-compat luci-base"
+
+    steps:
+      - name: 1. 检出代码
+        uses: actions/checkout@v4
+
+      - name: 2. 安装编译依赖
+        run: |
+          sudo apt-get update && sudo apt-get install -y build-essential libncurses5-dev gawk git wget unzip python3 python3-pip file rsync curl python3-pyelftools subversion time
+          sudo pip3 install pyelftools || true
+
+      - name: 3. 下载并解压 SDK
+        id: sdk
+        run: |
+          wget --timeout=60 --tries=3 $SDK_URL -O sdk.tar.xz || { echo "SDK 下载失败"; exit 1; }
+          tar xf sdk.tar.xz && mv $(find . -maxdepth 1 -type d -name "*sdk*" | head -1) openwrt-sdk
+          ls -la openwrt-sdk/
+
+      - name: 4. 准备插件文件
+        run: |
+          cd openwrt-sdk
+          rm -rf package/luci-app-openvpn-admin && mkdir -p package/luci-app-openvpn-admin
+          [ -f ../Makefile ] && cp ../Makefile package/luci-app-openvpn-admin/
+          [ -d ../luasrc ] && cp -r ../luasrc package/luci-app-openvpn-admin/
+          [ -d ../root ] && cp -r ../root package/luci-app-openvpn-admin/
+          if [ -d ../files ]; then
+            mkdir -p package/luci-app-openvpn-admin/root
+            cp -r ../files/* package/luci-app-openvpn-admin/root/
+          fi
+          echo "==== 插件目录结构 ===="
+          find package/luci-app-openvpn-admin -type d | sort | head -20
+
+      - name: 5. 更新 feeds 并安装依赖
+        run: |
+          cd openwrt-sdk
+          ./scripts/feeds update -a -f
+          ./scripts/feeds install luci-base luci-lib-jsonc luci-compat openvpn-openssl curl openssl-util || true
+          echo "==== 已安装的 feeds ===="
+          ./scripts/feeds list | grep -E "luci|openvpn|curl"
+
+      - name: 6. 生成配置
+        run: |
+          cd openwrt-sdk
+          cat > .config << EOF
+          CONFIG_TARGET_x86=y
+          CONFIG_TARGET_x86_64=y
+          CONFIG_TARGET_x86_64_DEVICE_generic=y
+          CONFIG_PACKAGE_luci-app-openvpn-admin=y
+          EOF
+          make defconfig
+          echo "==== 配置摘要 ===="
+          grep -E "CONFIG_TARGET|CONFIG_PACKAGE|CONFIG_OPENVPN" .config
+
+      - name: 7. 编译依赖包
+        run: |
+          cd openwrt-sdk
+          for pkg in $DEPENDENCIES; do
+            echo "==== 编译 $pkg ===="
+            pkg_path=$(find package feeds -name $pkg -type d | head -1)
+            if [ -n "$pkg_path" ]; then
+              make package/$pkg/compile V=sc -j$MAKE_JOBS || echo "⚠ $pkg 编译失败，跳过（非关键）"
+            else
+              echo "⚠ $pkg 在 feeds 中未找到，跳过"
+            fi
+          done
+
+      - name: 8. 编译主插件
+        run: |
+          cd openwrt-sdk
+          [ ! -d "package/luci-app-openvpn-admin" ] && { echo "插件目录缺失"; exit 1; }
+          make package/luci-app-openvpn-admin/clean
+          make package/luci-app-openvpn-admin/compile V=s -j$MAKE_JOBS 2>&1 | tee compile-log.txt
+          MAIN_IPK=$(find bin -name "*luci-app-openvpn-admin*.ipk" -type f | head -1)
+          if [ -z "$MAIN_IPK" ]; then
+            echo "==== 编译日志（最后100行）===="
+            tail -100 compile-log.txt
+            echo "❌ 主插件编译失败"
+          else
+            echo "✅ 主插件编译成功: $MAIN_IPK"
+          fi
+
+      - name: 9. 调试 - 查找所有编译输出
+        run: |
+          cd openwrt-sdk
+          echo "==== 搜索所有 IPK 文件 ===="
+          find . -name "*.ipk" -type f 2>/dev/null | sort
+          
+          echo "==== 查看 bin 目录结构 ===="
+          find bin -type f 2>/dev/null | head -30
+          
+          echo "==== 查看 packages 目录 ===="
+          find bin/packages -name "*.ipk" 2>/dev/null | grep -i openvpn
+          
+          echo "==== 检查编译日志中的错误 ===="
+          if [ -f compile-log.txt ]; then
+            grep -i "error\|failed\|cannot\|undefined" compile-log.txt | head -20
+          fi
+
+      - name: 10. 调试 - 检查插件目录状态
+        run: |
+          cd openwrt-sdk/package/luci-app-openvpn-admin
+          echo "==== 插件目录内容 ===="
+          ls -la
+          echo "==== Makefile 内容 ===="
+          cat Makefile 2>/dev/null || echo "Makefile 未找到"
+          echo "==== 目录结构 ===="
+          find . -type d | sort
+
+      - name: 11. 收集编译产物
+        run: |
+          cd openwrt-sdk
+          
+          echo "==== 查找所有 IPK 文件 ===="
+          find . -name "*.ipk" -type f 2>/dev/null > all_ipks.txt
+          echo "找到的 IPK 文件:"
+          cat all_ipks.txt
+          
+          mkdir -p ../output-x86_64
+          
+          while IFS= read -r ipk_path; do
+            if [ -f "$ipk_path" ]; then
+              filename=$(basename "$ipk_path")
+              echo "复制: $filename"
+              cp "$ipk_path" ../output-x86_64/
+            fi
+          done < all_ipks.txt
+          
+          echo "==== 输出目录内容 ===="
+          ls -lh ../output-x86_64/
+          
+          echo "==== 按文件大小排序 ===="
+          ls -lhS ../output-x86_64/ | head -10
+          
+          MAIN_IPK=$(find ../output-x86_64 -name "*luci-app-openvpn-admin*.ipk" 2>/dev/null | head -1)
+          if [ -z "$MAIN_IPK" ]; then
+            echo "警告：未找到主插件 IPK，尝试其他模式..."
+            find ../output-x86_64 -name "*openvpn*.ipk" 2>/dev/null
+            if [ -f package/luci-app-openvpn-admin/Makefile ]; then
+              echo "==== Makefile 中的包名定义 ===="
+              grep -i "PKG_NAME\|PKG_TITLE" package/luci-app-openvpn-admin/Makefile
+            fi
+          else
+            echo "✅ 找到主插件: $(basename $MAIN_IPK)"
+            echo "IPK 内容结构:"
+            tar -tzf $MAIN_IPK | head -20
+          fi
+
+      - name: 12. 清理缓存（可选）
+        run: |
+          echo "==== 开始清理缓存 ===="
+          cd openwrt-sdk
+          # 清理编译缓存，减少空间占用
+          make clean || echo "清理失败，继续执行"
+          
+          # 删除下载的源码缓存
+          rm -rf dl/* build_dir/* staging_dir/* tmp/* 2>/dev/null || true
+          
+          # 清理日志文件
+          rm -f compile-log.txt 2>/dev/null || true
+          
+          echo "清理完成，剩余空间:"
+          df -h
+
+      - name: 13. 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: openvpn-admin-x86_64
+          path: output-x86_64/
+          retention-days: 7
+
+      - name: 14. 构建报告
+        if: always()
+        run: |
+          echo "========================================"
+          echo "构建状态报告 - X86_64"
+          echo "========================================"
+          echo "架构：x86_64 (64位)"
+          echo "固件版本：ImmortalWrt 23.05.0"
+          echo "作业状态: ${{ job.status }}"
+          echo "SDK 下载状态: ${{ steps.sdk.outcome }}"
+          echo ""
+          if [ -d output-x86_64 ]; then
+            IPK_COUNT=$(find output-x86_64 -name "*.ipk" 2>/dev/null | wc -l)
+            echo "📦 生成的 IPK 数量: $IPK_COUNT"
+            echo "📋 IPK 列表:"
+            ls -lh output-x86_64/
+            MAIN_IPK=$(find output-x86_64 -name "*luci-app-openvpn-admin*.ipk" 2>/dev/null | head -1)
+            if [ -n "$MAIN_IPK" ]; then
+              echo "✅ 核心插件: $(basename $MAIN_IPK)"
+              echo "📊 文件大小: $(du -h $MAIN_IPK | cut -f1)"
+              echo "🔍 架构信息:"
+              tar -xzOf $MAIN_IPK ./control.tar.gz 2>/dev/null | tar -xzO ./control 2>/dev/null | grep -E "Architecture|Version|Package" || echo "无法提取控制信息"
+            else
+              echo "❌ 核心插件编译失败"
+              echo "尝试查找其他 openvpn 相关包:"
+              find output-x86_64 -name "*openvpn*.ipk" 2>/dev/null || echo "未找到"
+            fi
+          else
+            echo "❌ 输出目录不存在"
+          fi
