@@ -60,24 +60,7 @@ jobs:
         run: |
           cd openwrt-sdk
           cat > .config << EOF
-          CONFIG_TARGET_rockchip=y
-          CONFIG_TARGET_rockchip_armv8=y
-          CONFIG_TARGET_DEVICE_packages=y
           CONFIG_PACKAGE_luci-app-openvpn-admin=y
-          CONFIG_PACKAGE_luci-base=y
-          CONFIG_PACKAGE_luci-lib-jsonc=y
-          CONFIG_PACKAGE_luci-compat=y
-          CONFIG_PACKAGE_openvpn-openssl=y
-          CONFIG_OPENVPN_OPENSSL_ENABLE_MANAGEMENT=y
-          CONFIG_OPENVPN_OPENSSL_ENABLE_LZO=y
-          CONFIG_OPENVPN_OPENSSL_ENABLE_LZ4=y
-          # CONFIG_PACKAGE_easy-rsa is not set  # SDK 中不存在，注释
-          # CONFIG_PACKAGE_netcat-openbsd is not set  # SDK 中不存在，注释
-          CONFIG_PACKAGE_curl=y
-          CONFIG_PACKAGE_openssl-util=y
-          CONFIG_ALL=n
-          CONFIG_ALL_KMODS=n
-          CONFIG_ALL_NONSHARED=n
           EOF
           make defconfig
           grep -E "CONFIG_TARGET|CONFIG_PACKAGE|CONFIG_OPENVPN" .config
