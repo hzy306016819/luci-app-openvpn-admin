@@ -49,6 +49,14 @@
 3. 上传并安装 IPK 文件：
    ```bash
    opkg install luci-app-openvpn-admin_*.ipk
+# 安装效果图（只在安装好的系统测试过，末测试编译）
+<img width="1918" height="880" alt="image" src="https://github.com/user-attachments/assets/7dc22795-2a1d-48f3-9847-1f5e22bcddba" />
+<img width="1918" height="880" alt="image" src="https://github.com/user-attachments/assets/1dffeeb0-e778-40bd-9832-2aa6d1249f15" />
+<img width="1918" height="880" alt="image" src="https://github.com/user-attachments/assets/ef562183-fbf7-4b30-8cd3-613129c83913" />
+<img width="1918" height="880" alt="image" src="https://github.com/user-attachments/assets/a0ac2d44-7fb5-44bf-86f1-185fab269906" />
+<img width="1918" height="880" alt="image" src="https://github.com/user-attachments/assets/0ca09a8c-4598-41b8-af83-345e5730afc3" />
+
+
 
 # 插件目录结构
 
@@ -68,13 +76,28 @@ luci-app-openvpn-admin/
 │   ├── etc/
 │   │   ├── config/
 │   │   │   └── openvpn-admin
-│   │   └── openvpn-admin/
+│   │   │   └── openvpn
+│   │   └── openvpn/
 │   │       ├── clean-garbage.sh
 │   │       ├── client-connect-cn.sh
 │   │       ├── generate-client.sh
-│   │       ├── renewcert.sh
-│   │       └── template/
-│   │           └── server.template
+│   │       └── renewcert.sh
+│   │        
+│   │           
 └── Makefile
 ```
-
+## 文件对应目录
+文件目录：
+"/usr/lib/lua/luci/controller/openvpn-admin.lua"
+"/usr/lib/lua/luci/view/openvpn-admin/status.htm"
+"/usr/lib/lua/luci/view/openvpn-admin/client.htm"
+"/usr/lib/lua/luci/view/openvpn-admin/server.htm"
+"/usr/lib/lua/luci/view/openvpn-admin/logs.htm"
+"/usr/lib/lua/luci/view/openvpn-admin/settings.htm"
+"/etc/config/openvpn-admin"                                                配置文件
+"/etc/config/openvpn"                                                            配置文件
+下面需要执行权限的：
+"/etc/openvpn/generate-client.sh"                              OpenVPN客户端证书生成和配置文件生成脚本
+"/etc/openvpn/client-connect-cn.sh"                          用于检查客户端CN是否在黑名单中
+"/etc/openvpn/renewcert.sh"                                       证书重置脚本。这个不需要执行权限
+"/etc/openvpn/clean-garbage.sh"                               OpenVPN管理界面垃圾文件清理脚本
