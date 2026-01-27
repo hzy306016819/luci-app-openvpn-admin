@@ -95,7 +95,7 @@ luci-app-openvpn-admin/
 "/usr/lib/lua/luci/view/openvpn-admin/logs.htm"
 "/usr/lib/lua/luci/view/openvpn-admin/settings.htm"
 "/etc/config/openvpn-admin"                                                配置文件
-"/etc/config/openvpn"                                                            配置文件
+"/etc/config/openvpn"                                                      配置文件
 下面需要执行权限的：
 "/etc/openvpn/generate-client.sh"                              OpenVPN客户端证书生成和配置文件生成脚本
 "/etc/openvpn/client-connect-cn.sh"                          用于检查客户端CN是否在黑名单中
