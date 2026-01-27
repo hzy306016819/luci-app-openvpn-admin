@@ -1,4 +1,4 @@
-name: Build and Release luci-app-openvpn-admin (X86_64)
+name: 构建并发布 luci-app-openvpn-admin (X86_64版)
 on: 
   workflow_dispatch:
     inputs:
@@ -16,55 +16,60 @@ on:
       - 'v*'
 
 jobs:
-  build-x86:
+  构建插件:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     env:
-      MAKE_JOBS: 4
-      SDK_URL: "https://downloads.immortalwrt.org/releases/23.05.0/targets/x86/64/immortalwrt-sdk-23.05.0-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
-      DEPENDENCIES: "openssl-util curl openvpn-openssl luci-lib-jsonc luci-compat luci-base"
+      编译线程数: 4
+      SDK下载地址: "https://downloads.immortalwrt.org/releases/23.05.0/targets/x86/64/immortalwrt-sdk-23.05.0-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+      依赖包列表: "openssl-util curl openvpn-openssl luci-lib-jsonc luci-compat luci-base"
 
     steps:
-      - name: 1. Checkout code
+      - name: 1. 检出代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: 2. Install build dependencies
+      - name: 2. 安装编译依赖
         run: |
           sudo apt-get update && sudo apt-get install -y build-essential libncurses5-dev gawk git wget unzip python3 python3-pip file rsync curl python3-pyelftools subversion time
           sudo pip3 install pyelftools || true
 
-      - name: 3. Download & extract ImmortalWrt SDK
+      - name: 3. 下载并解压 ImmortalWrt SDK
         id: sdk
         run: |
-          wget --timeout=60 --tries=3 $SDK_URL -O sdk.tar.xz || { echo "SDK download failed"; exit 1; }
+          wget --timeout=60 --tries=3 $SDK下载地址 -O sdk.tar.xz || { echo "SDK下载失败"; exit 1; }
           tar xf sdk.tar.xz && mv $(find . -maxdepth 1 -type d -name "*sdk*" | head -1) openwrt-sdk
+          echo "SDK目录内容:"
           ls -la openwrt-sdk/
 
-      - name: 4. Prepare package files
+      - name: 4. 准备插件文件
         run: |
           cd openwrt-sdk
+          # 清理旧目录，创建新目录
           rm -rf package/luci-app-openvpn-admin && mkdir -p package/luci-app-openvpn-admin
+          # 复制修正后的 Makefile
           [ -f ../Makefile ] && cp ../Makefile package/luci-app-openvpn-admin/
+          # 复制 luasrc/root 目录（新结构），而非 files 目录
           [ -d ../luasrc ] && cp -r ../luasrc package/luci-app-openvpn-admin/
           [ -d ../root ] && cp -r ../root package/luci-app-openvpn-admin/
+          # 兼容旧 files 目录
           if [ -d ../files ]; then
             mkdir -p package/luci-app-openvpn-admin/root
             cp -r ../files/* package/luci-app-openvpn-admin/root/
           fi
-          echo "==== Package dir structure ===="
+          echo "==== 插件目录结构 ===="
           find package/luci-app-openvpn-admin -type d | sort | head -20
 
-      - name: 5. Update feeds & install dependencies
+      - name: 5. 更新软件源并安装依赖
         run: |
           cd openwrt-sdk
           ./scripts/feeds update -a -f
           ./scripts/feeds install luci-base luci-lib-jsonc luci-compat openvpn-openssl curl openssl-util || true
-          echo "==== Installed feeds ===="
+          echo "==== 已安装的软件源 ===="
           ./scripts/feeds list | grep -E "luci|openvpn|curl"
 
-      - name: 6. Generate .config
+      - name: 6. 生成编译配置
         run: |
           cd openwrt-sdk
           cat > .config << EOF
@@ -77,84 +82,91 @@ jobs:
           echo "==== 配置摘要 ===="
           grep -E "CONFIG_TARGET|CONFIG_PACKAGE|CONFIG_OPENVPN" .config
 
-      - name: 7. Compile dependencies
+      - name: 7. 编译依赖包
         run: |
           cd openwrt-sdk
-          for pkg in $DEPENDENCIES; do
-            echo "==== Compiling $pkg ===="
+          for pkg in $依赖包列表; do
+            echo "==== 正在编译 $pkg ===="
             pkg_path=$(find package feeds -name $pkg -type d | head -1)
             if [ -n "$pkg_path" ]; then
-              make package/$pkg/compile V=sc -j$MAKE_JOBS || echo "⚠ $pkg compile failed, skip (non-critical)"
+              make package/$pkg/compile V=sc -j$编译线程数 || echo "⚠ $pkg 编译失败，跳过（非关键依赖）"
             else
-              echo "⚠ $pkg not found in feeds, skip"
+              echo "⚠ $pkg 在软件源中未找到，跳过"
             fi
           done
 
-      - name: 8. Compile main package
+      - name: 8. 编译主插件包
         run: |
           cd openwrt-sdk
-          [ ! -d "package/luci-app-openvpn-admin" ] && { echo "Package dir missing"; exit 1; }
+          [ ! -d "package/luci-app-openvpn-admin" ] && { echo "插件目录不存在"; exit 1; }
           make package/luci-app-openvpn-admin/clean
-          make package/luci-app-openvpn-admin/compile V=s -j$MAKE_JOBS 2>&1 | tee compile-log.txt
-          MAIN_IPK=$(find bin -name "*luci-app-openvpn-admin*.ipk" -type f | head -1)
-          if [ -z "$MAIN_IPK" ]; then
-            echo "==== Compile log (last 100 lines) ===="
+          echo "开始编译主插件，详细日志如下："
+          make package/luci-app-openvpn-admin/compile V=s -j$编译线程数 2>&1 | tee compile-log.txt
+          
+          # 检查编译结果
+          主插件文件=$(find bin -name "*luci-app-openvpn-admin*.ipk" -type f | head -1)
+          if [ -z "$主插件文件" ]; then
+            echo "==== 编译日志（最后100行） ===="
             tail -100 compile-log.txt
-            echo "❌ Main package compile failed"
+            echo "❌ 主插件编译失败"
             exit 1
           else
-            echo "✅ Main package compiled: $MAIN_IPK"
+            echo "✅ 主插件编译成功: $主插件文件"
           fi
 
-      - name: 9. Collect and prepare release artifacts
-        id: prepare-release
+      - name: 9. 收集并准备发布文件
+        id: 准备发布
         run: |
           cd openwrt-sdk
           
           # 查找主插件IPK
-          MAIN_IPK=$(find . -name "*luci-app-openvpn-admin*.ipk" -type f 2>/dev/null | head -1)
+          主插件文件=$(find . -name "*luci-app-openvpn-admin*.ipk" -type f 2>/dev/null | head -1)
           
-          if [ -z "$MAIN_IPK" ]; then
-            echo "❌ 未找到主插件IPK"
+          if [ -z "$主插件文件" ]; then
+            echo "❌ 未找到主插件IPK文件"
             exit 1
           fi
           
           # 获取IPK详细信息
-          IPK_NAME=$(basename "$MAIN_IPK")
-          IPK_SIZE=$(du -h "$MAIN_IPK" | cut -f1)
+          插件文件名=$(basename "$主插件文件")
+          插件大小=$(du -h "$主插件文件" | cut -f1)
           
           # 提取版本信息
-          if tar -xzOf "$MAIN_IPK" ./control.tar.gz 2>/dev/null | tar -xzO ./control 2>/dev/null > /tmp/control; then
-            PKG_VERSION=$(grep -i "^Version:" /tmp/control | cut -d' ' -f2)
-            PKG_ARCH=$(grep -i "^Architecture:" /tmp/control | cut -d' ' -f2)
+          if tar -xzOf "$主插件文件" ./control.tar.gz 2>/dev/null | tar -xzO ./control 2>/dev/null > /tmp/control; then
+            插件版本=$(grep -i "^Version:" /tmp/control | cut -d' ' -f2)
+            插件架构=$(grep -i "^Architecture:" /tmp/control | cut -d' ' -f2)
           else
-            PKG_VERSION="unknown"
-            PKG_ARCH="unknown"
+            插件版本="未知"
+            插件架构="未知"
           fi
           
-          # 创建release目录
+          # 创建发布目录
           mkdir -p ../release-artifacts
-          cp "$MAIN_IPK" ../release-artifacts/
+          cp "$主插件文件" ../release-artifacts/
+          
+          # 复制编译日志用于调试
+          cp compile-log.txt ../release-artifacts/编译日志.txt
           
           # 创建说明文件
           cat > ../release-artifacts/README.md << EOF
           # luci-app-openvpn-admin - X86_64 版本
           
           ## 插件信息
-          - **文件名**: ${IPK_NAME}
-          - **版本**: ${PKG_VERSION}
-          - **架构**: ${PKG_ARCH}
-          - **大小**: ${IPK_SIZE}
+          - **文件名**: ${插件文件名}
+          - **版本**: ${插件版本}
+          - **架构**: ${插件架构}
+          - **大小**: ${插件大小}
           - **编译时间**: $(date '+%Y-%m-%d %H:%M:%S')
+          - **GitHub Actions ID**: ${{ github.run_id }}
           
           ## 安装方法
           
           \`\`\`bash
           # 上传到路由器
-          scp ${IPK_NAME} root@路由器IP:/tmp/
+          scp ${插件文件名} root@路由器IP:/tmp/
           
           # 安装
-          opkg install /tmp/${IPK_NAME}
+          opkg install /tmp/${插件文件名}
           
           # 如果依赖缺失，先安装依赖
           opkg install curl openvpn-openssl openssl-util luci-lib-jsonc luci-compat
@@ -172,19 +184,19 @@ jobs:
           EOF
           
           # 输出信息供后续步骤使用
-          echo "IPK_PATH=$MAIN_IPK" >> $GITHUB_OUTPUT
-          echo "IPK_NAME=$IPK_NAME" >> $GITHUB_OUTPUT
-          echo "PKG_VERSION=$PKG_VERSION" >> $GITHUB_OUTPUT
-          echo "PKG_ARCH=$PKG_ARCH" >> $GITHUB_OUTPUT
+          echo "IPK路径=$主插件文件" >> $GITHUB_OUTPUT
+          echo "IPK名称=$插件文件名" >> $GITHUB_OUTPUT
+          echo "插件版本=$插件版本" >> $GITHUB_OUTPUT
+          echo "插件架构=$插件架构" >> $GITHUB_OUTPUT
           
-          echo "✅ 准备发布文件完成"
-          echo "📦 文件: $IPK_NAME"
-          echo "🏷️ 版本: $PKG_VERSION"
-          echo "🏗️ 架构: $PKG_ARCH"
+          echo "✅ 发布文件准备完成"
+          echo "📦 文件: $插件文件名"
+          echo "🏷️ 版本: $插件版本"
+          echo "🏗️ 架构: $插件架构"
 
-      - name: 10. Create GitHub Release
+      - name: 10. 创建GitHub Release（手动触发）
         if: success() && github.event_name == 'workflow_dispatch'
-        id: create_release
+        id: 创建发布
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.event.inputs.version }}
@@ -194,20 +206,20 @@ jobs:
             
             ## 版本信息
             - **编译时间**: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
-            - **架构**: ${{ steps.prepare-release.outputs.PKG_ARCH }}
-            - **插件版本**: ${{ steps.prepare-release.outputs.PKG_VERSION }}
+            - **架构**: ${{ steps.准备发布.outputs.插件架构 }}
+            - **插件版本**: ${{ steps.准备发布.outputs.插件版本 }}
             
             ## 安装说明
             
             1. 下载对应的IPK文件
             2. 上传到路由器:
             ```bash
-            scp ${{ steps.prepare-release.outputs.IPK_NAME }} root@路由器IP:/tmp/
+            scp ${{ steps.准备发布.outputs.IPK名称 }} root@路由器IP:/tmp/
             ```
             
             3. 安装插件:
             ```bash
-            opkg install /tmp/${{ steps.prepare-release.outputs.IPK_NAME }}
+            opkg install /tmp/${{ steps.准备发布.outputs.IPK名称 }}
             ```
             
             ## 依赖要求
@@ -229,14 +241,14 @@ jobs:
           prerelease: ${{ github.event.inputs.prerelease }}
           generate_release_notes: true
           files: |
-            release-artifacts/${{ steps.prepare-release.outputs.IPK_NAME }}
+            release-artifacts/${{ steps.准备发布.outputs.IPK名称 }}
             release-artifacts/README.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 11. Create Tagged Release
+      - name: 11. 创建标签Release（标签触发）
         if: success() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        id: create_tagged_release
+        id: 创建标签发布
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.ref_name }}
@@ -247,8 +259,8 @@ jobs:
             ## 版本信息
             - **标签**: ${{ github.ref_name }}
             - **编译时间**: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
-            - **架构**: ${{ steps.prepare-release.outputs.PKG_ARCH }}
-            - **插件版本**: ${{ steps.prepare-release.outputs.PKG_VERSION }}
+            - **架构**: ${{ steps.准备发布.outputs.插件架构 }}
+            - **插件版本**: ${{ steps.准备发布.outputs.插件版本 }}
             
             ## 安装说明
             
@@ -262,12 +274,12 @@ jobs:
           prerelease: false
           generate_release_notes: true
           files: |
-            release-artifacts/${{ steps.prepare-release.outputs.IPK_NAME }}
+            release-artifacts/${{ steps.准备发布.outputs.IPK名称 }}
             release-artifacts/README.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 12. Upload artifacts as backup
+      - name: 12. 上传构建产物（备份）
         uses: actions/upload-artifact@v4
         with:
           name: openvpn-admin-x86_64-${{ github.run_id }}
@@ -276,32 +288,119 @@ jobs:
             openwrt-sdk/compile-log.txt
           retention-days: 30
 
-      - name: 13. Build report
+      - name: 13. 清理工作空间（缓存和中间文件）
+        if: always()
+        run: |
+          echo "==== 开始清理工作空间 ===="
+          
+          # 1. 计算清理前磁盘使用情况
+          echo "清理前磁盘使用情况:"
+          df -h
+          echo "清理前工作空间大小:"
+          du -sh . || true
+          
+          # 2. 删除OpenWrt SDK编译产生的中间文件（这些文件占空间最大）
+          if [ -d "openwrt-sdk" ]; then
+            echo "清理OpenWrt SDK中间文件..."
+            cd openwrt-sdk
+            
+            # 删除编译产生的中间目录（这些占空间最大）
+            rm -rf build_dir 2>/dev/null || true
+            rm -rf staging_dir 2>/dev/null || true
+            rm -rf tmp 2>/dev/null || true
+            rm -rf logs 2>/dev/null || true
+            
+            # 保留bin目录（包含编译好的IPK）
+            cd ..
+          fi
+          
+          # 3. 清理系统缓存
+          echo "清理APT缓存..."
+          sudo apt-get clean 2>/dev/null || true
+          sudo rm -rf /var/lib/apt/lists/* 2>/dev/null || true
+          
+          # 4. 清理pip缓存
+          echo "清理pip缓存..."
+          pip3 cache purge 2>/dev/null || true
+          
+          # 5. 清理临时文件
+          echo "清理临时文件..."
+          sudo rm -rf /tmp/* 2>/dev/null || true
+          sudo rm -rf /var/tmp/* 2>/dev/null || true
+          
+          # 6. 清理下载的压缩包
+          rm -f sdk.tar.xz 2>/dev/null || true
+          
+          # 7. 清理release-artifacts以外的目录
+          echo "保留release-artifacts目录，清理其他..."
+          if [ -d "release-artifacts" ]; then
+            # 创建临时目录保存release文件
+            mkdir -p /tmp/release-backup
+            cp -r release-artifacts/* /tmp/release-backup/ 2>/dev/null || true
+            
+            # 清理当前目录
+            find . -maxdepth 1 ! -name "release-artifacts" ! -name "." -exec rm -rf {} + 2>/dev/null || true
+            
+            # 恢复release文件
+            mv /tmp/release-backup/* release-artifacts/ 2>/dev/null || true
+            rm -rf /tmp/release-backup
+          fi
+          
+          # 8. 计算清理后磁盘使用情况
+          echo "清理后磁盘使用情况:"
+          df -h
+          echo "清理后工作空间大小:"
+          du -sh . 2>/dev/null || true
+          
+          echo "✅ 工作空间清理完成"
+
+      - name: 14. 上传最终产物（清理后）
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 最终产物-${{ github.run_id }}
+          path: |
+            release-artifacts/
+          retention-days: 7
+
+      - name: 15. 生成构建报告
         if: always()
         run: |
           echo "========================================"
-          echo "构建状态报告 - X86_64"
+          echo "构建状态报告 - X86_64版本"
           echo "========================================"
           echo "作业状态: ${{ job.status }}"
           echo "触发方式: ${{ github.event_name }}"
+          echo "工作流ID: ${{ github.run_id }}"
+          echo "运行编号: ${{ github.run_number }}"
           
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "版本号: ${{ github.event.inputs.version }}"
-            echo "预发布: ${{ github.event.inputs.prerelease }}"
+            echo "预发布版本: ${{ github.event.inputs.prerelease }}"
           elif [ "${{ github.event_name }}" = "push" ]; then
             echo "标签: ${{ github.ref_name }}"
+            echo "提交SHA: ${{ github.sha }}"
           fi
           
           echo ""
+          echo "📊 磁盘使用情况:"
+          df -h | grep -E "Filesystem|/dev/"
+          
+          echo ""
           if [ -d release-artifacts ]; then
-            echo "📦 发布文件:"
+            echo "📦 发布文件列表:"
             ls -lh release-artifacts/
             
+            echo ""
+            echo "🔧 插件信息:"
             if [ -f release-artifacts/README.md ]; then
-              echo ""
-              echo "📄 README内容摘要:"
-              head -20 release-artifacts/README.md
+              grep -E "文件名|版本|架构|大小" release-artifacts/README.md | head -4
             fi
           else
             echo "❌ 发布目录不存在"
           fi
+          
+          echo ""
+          echo "========================================"
+          echo "构建完成"
+          echo "========================================"
