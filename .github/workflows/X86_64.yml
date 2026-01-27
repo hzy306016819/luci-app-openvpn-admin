@@ -12,9 +12,10 @@ on:
         required: true
         default: false
         type: boolean
+        
 
 jobs:
-  构建插件:
+  build:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     env:
