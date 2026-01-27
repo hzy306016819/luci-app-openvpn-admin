@@ -1,20 +1,34 @@
-name: Build luci-app-openvpn-admin (X86_64)
-on: [workflow_dispatch]
+name: Build and Release luci-app-openvpn-admin (X86_64)
+on: 
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (例如: v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+      prerelease:
+        description: '是否为预发布版本'
+        required: true
+        default: false
+        type: boolean
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   build-x86:
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     env:
-      MAKE_JOBS: 4  # x86编译可以使用更多线程
-      # 修改为x86_64架构的SDK
+      MAKE_JOBS: 4
       SDK_URL: "https://downloads.immortalwrt.org/releases/23.05.0/targets/x86/64/immortalwrt-sdk-23.05.0-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
-      # x86的依赖包
       DEPENDENCIES: "openssl-util curl openvpn-openssl luci-lib-jsonc luci-compat luci-base"
 
     steps:
       - name: 1. Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 2. Install build dependencies
         run: |
@@ -31,19 +45,14 @@ jobs:
       - name: 4. Prepare package files
         run: |
           cd openwrt-sdk
-          # 清理旧目录，创建新目录
           rm -rf package/luci-app-openvpn-admin && mkdir -p package/luci-app-openvpn-admin
-          # 复制修正后的 Makefile
           [ -f ../Makefile ] && cp ../Makefile package/luci-app-openvpn-admin/
-          # 复制 luasrc/root 目录（新结构），而非 files 目录
           [ -d ../luasrc ] && cp -r ../luasrc package/luci-app-openvpn-admin/
           [ -d ../root ] && cp -r ../root package/luci-app-openvpn-admin/
-          # 兼容旧 files 目录
           if [ -d ../files ]; then
             mkdir -p package/luci-app-openvpn-admin/root
             cp -r ../files/* package/luci-app-openvpn-admin/root/
           fi
-          # 验证目录结构
           echo "==== Package dir structure ===="
           find package/luci-app-openvpn-admin -type d | sort | head -20
 
@@ -51,13 +60,11 @@ jobs:
         run: |
           cd openwrt-sdk
           ./scripts/feeds update -a -f
-          # 安装必要的依赖
           ./scripts/feeds install luci-base luci-lib-jsonc luci-compat openvpn-openssl curl openssl-util || true
-          # 检查依赖是否安装成功
           echo "==== Installed feeds ===="
           ./scripts/feeds list | grep -E "luci|openvpn|curl"
 
-      - name: 6. Generate .config (配置为x86_64架构)
+      - name: 6. Generate .config
         run: |
           cd openwrt-sdk
           cat > .config << EOF
@@ -87,130 +94,214 @@ jobs:
         run: |
           cd openwrt-sdk
           [ ! -d "package/luci-app-openvpn-admin" ] && { echo "Package dir missing"; exit 1; }
-          # 清理旧构建文件
           make package/luci-app-openvpn-admin/clean
-          # 编译并输出详细日志
           make package/luci-app-openvpn-admin/compile V=s -j$MAKE_JOBS 2>&1 | tee compile-log.txt
-          # 检查编译结果
           MAIN_IPK=$(find bin -name "*luci-app-openvpn-admin*.ipk" -type f | head -1)
           if [ -z "$MAIN_IPK" ]; then
             echo "==== Compile log (last 100 lines) ===="
             tail -100 compile-log.txt
             echo "❌ Main package compile failed"
+            exit 1
           else
             echo "✅ Main package compiled: $MAIN_IPK"
           fi
 
-      - name: 8.5 Debug - 查找所有编译输出
-        run: |
-          cd openwrt-sdk
-          echo "==== 搜索所有IPK文件 ===="
-          find . -name "*.ipk" -type f 2>/dev/null | sort
-          
-          echo "==== 查看bin目录结构 ===="
-          find bin -type f 2>/dev/null | head -30
-          
-          echo "==== 查看packages目录 ===="
-          find bin/packages -name "*.ipk" 2>/dev/null | grep -i openvpn
-          
-          echo "==== 检查编译日志中的错误 ===="
-          if [ -f compile-log.txt ]; then
-            grep -i "error\|failed\|cannot\|undefined" compile-log.txt | head -20
-          fi
-
-      - name: 8.6 Debug - 检查插件目录状态
-        run: |
-          cd openwrt-sdk/package/luci-app-openvpn-admin
-          echo "==== 插件目录内容 ===="
-          ls -la
-          echo "==== Makefile内容 ===="
-          cat Makefile 2>/dev/null || echo "Makefile not found"
-          echo "==== 目录结构 ===="
-          find . -type d | sort
-
-      - name: 9. Collect artifacts (增强版)
+      - name: 9. Collect and prepare release artifacts
+        id: prepare-release
         run: |
           cd openwrt-sdk
           
-          # 1. 找到所有IPK文件，无论位置
-          echo "==== 查找所有IPK文件 ===="
-          find . -name "*.ipk" -type f 2>/dev/null > all_ipks.txt
-          echo "找到的IPK文件:"
-          cat all_ipks.txt
+          # 查找主插件IPK
+          MAIN_IPK=$(find . -name "*luci-app-openvpn-admin*.ipk" -type f 2>/dev/null | head -1)
           
-          # 2. 创建输出目录
-          mkdir -p ../output-x86_64
-          
-          # 3. 复制所有IPK到输出目录
-          while IFS= read -r ipk_path; do
-            if [ -f "$ipk_path" ]; then
-              filename=$(basename "$ipk_path")
-              echo "复制: $filename"
-              cp "$ipk_path" ../output-x86_64/
-            fi
-          done < all_ipks.txt
-          
-          # 4. 列出输出目录
-          echo "==== 输出目录内容 ===="
-          ls -lh ../output-x86_64/
-          
-          # 5. 按大小排序
-          echo "==== 按文件大小排序 ===="
-          ls -lhS ../output-x86_64/ | head -10
-          
-          # 6. 验证是否找到主插件
-          MAIN_IPK=$(find ../output-x86_64 -name "*luci-app-openvpn-admin*.ipk" 2>/dev/null | head -1)
           if [ -z "$MAIN_IPK" ]; then
-            echo "警告：未找到主插件IPK，尝试其他模式..."
-            # 尝试查找任何包含openvpn的IPK
-            find ../output-x86_64 -name "*openvpn*.ipk" 2>/dev/null
-            # 检查Makefile中的包名
-            if [ -f package/luci-app-openvpn-admin/Makefile ]; then
-              echo "==== Makefile中的包名定义 ===="
-              grep -i "PKG_NAME\|PKG_TITLE" package/luci-app-openvpn-admin/Makefile
-            fi
-          else
-            echo "✅ 找到主插件: $(basename $MAIN_IPK)"
-            # 查看IPK内容
-            echo "IPK内容结构:"
-            tar -tzf $MAIN_IPK | head -20
+            echo "❌ 未找到主插件IPK"
+            exit 1
           fi
+          
+          # 获取IPK详细信息
+          IPK_NAME=$(basename "$MAIN_IPK")
+          IPK_SIZE=$(du -h "$MAIN_IPK" | cut -f1)
+          
+          # 提取版本信息
+          if tar -xzOf "$MAIN_IPK" ./control.tar.gz 2>/dev/null | tar -xzO ./control 2>/dev/null > /tmp/control; then
+            PKG_VERSION=$(grep -i "^Version:" /tmp/control | cut -d' ' -f2)
+            PKG_ARCH=$(grep -i "^Architecture:" /tmp/control | cut -d' ' -f2)
+          else
+            PKG_VERSION="unknown"
+            PKG_ARCH="unknown"
+          fi
+          
+          # 创建release目录
+          mkdir -p ../release-artifacts
+          cp "$MAIN_IPK" ../release-artifacts/
+          
+          # 创建说明文件
+          cat > ../release-artifacts/README.md << EOF
+          # luci-app-openvpn-admin - X86_64 版本
+          
+          ## 插件信息
+          - **文件名**: ${IPK_NAME}
+          - **版本**: ${PKG_VERSION}
+          - **架构**: ${PKG_ARCH}
+          - **大小**: ${IPK_SIZE}
+          - **编译时间**: $(date '+%Y-%m-%d %H:%M:%S')
+          
+          ## 安装方法
+          
+          \`\`\`bash
+          # 上传到路由器
+          scp ${IPK_NAME} root@路由器IP:/tmp/
+          
+          # 安装
+          opkg install /tmp/${IPK_NAME}
+          
+          # 如果依赖缺失，先安装依赖
+          opkg install curl openvpn-openssl openssl-util luci-lib-jsonc luci-compat
+          \`\`\`
+          
+          ## 支持的固件
+          - ImmortalWrt 23.05.0
+          - OpenWrt 23.05.x
+          - 其他基于musl的x86_64固件
+          
+          ## 注意事项
+          1. 确保路由器有足够的空间
+          2. 安装后需要重启luci界面或路由器
+          3. 配置前请确保已安装并配置好OpenVPN
+          EOF
+          
+          # 输出信息供后续步骤使用
+          echo "IPK_PATH=$MAIN_IPK" >> $GITHUB_OUTPUT
+          echo "IPK_NAME=$IPK_NAME" >> $GITHUB_OUTPUT
+          echo "PKG_VERSION=$PKG_VERSION" >> $GITHUB_OUTPUT
+          echo "PKG_ARCH=$PKG_ARCH" >> $GITHUB_OUTPUT
+          
+          echo "✅ 准备发布文件完成"
+          echo "📦 文件: $IPK_NAME"
+          echo "🏷️ 版本: $PKG_VERSION"
+          echo "🏗️ 架构: $PKG_ARCH"
 
-      - name: 10. Upload artifacts
+      - name: 10. Create GitHub Release
+        if: success() && github.event_name == 'workflow_dispatch'
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.event.inputs.version }}
+          name: luci-app-openvpn-admin ${{ github.event.inputs.version }} (X86_64)
+          body: |
+            # luci-app-openvpn-admin - X86_64 版本
+            
+            ## 版本信息
+            - **编译时间**: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
+            - **架构**: ${{ steps.prepare-release.outputs.PKG_ARCH }}
+            - **插件版本**: ${{ steps.prepare-release.outputs.PKG_VERSION }}
+            
+            ## 安装说明
+            
+            1. 下载对应的IPK文件
+            2. 上传到路由器:
+            ```bash
+            scp ${{ steps.prepare-release.outputs.IPK_NAME }} root@路由器IP:/tmp/
+            ```
+            
+            3. 安装插件:
+            ```bash
+            opkg install /tmp/${{ steps.prepare-release.outputs.IPK_NAME }}
+            ```
+            
+            ## 依赖要求
+            - openssl-util
+            - curl
+            - openvpn-openssl
+            - luci-lib-jsonc
+            - luci-compat
+            - luci-base
+            
+            ## 支持的固件
+            - ImmortalWrt 23.05.0 (x86_64)
+            - OpenWrt 23.05.x (x86_64)
+            
+            ## 源码
+            源码仓库: https://github.com/${{ github.repository }}
+            
+          draft: false
+          prerelease: ${{ github.event.inputs.prerelease }}
+          generate_release_notes: true
+          files: |
+            release-artifacts/${{ steps.prepare-release.outputs.IPK_NAME }}
+            release-artifacts/README.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 11. Create Tagged Release
+        if: success() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        id: create_tagged_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: luci-app-openvpn-admin ${{ github.ref_name }} (X86_64)
+          body: |
+            # luci-app-openvpn-admin - X86_64 版本
+            
+            ## 版本信息
+            - **标签**: ${{ github.ref_name }}
+            - **编译时间**: $(date -u +'%Y-%m-%dT%H:%M:%SZ')
+            - **架构**: ${{ steps.prepare-release.outputs.PKG_ARCH }}
+            - **插件版本**: ${{ steps.prepare-release.outputs.PKG_VERSION }}
+            
+            ## 安装说明
+            
+            详见附带的README.md文件
+            
+            ## 源码
+            源码仓库: https://github.com/${{ github.repository }}
+            本次提交: ${{ github.sha }}
+            
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            release-artifacts/${{ steps.prepare-release.outputs.IPK_NAME }}
+            release-artifacts/README.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 12. Upload artifacts as backup
         uses: actions/upload-artifact@v4
         with:
-          name: openvpn-admin-x86_64
-          path: output-x86_64/
-          retention-days: 7
+          name: openvpn-admin-x86_64-${{ github.run_id }}
+          path: |
+            release-artifacts/
+            openwrt-sdk/compile-log.txt
+          retention-days: 30
 
-      - name: 11. Build report
+      - name: 13. Build report
         if: always()
         run: |
           echo "========================================"
           echo "构建状态报告 - X86_64"
           echo "========================================"
-          echo "架构：x86_64 (64位)"
-          echo "固件版本：ImmortalWrt 23.05.0"
           echo "作业状态: ${{ job.status }}"
-          echo "SDK下载状态: ${{ steps.sdk.outcome }}"
+          echo "触发方式: ${{ github.event_name }}"
+          
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "版本号: ${{ github.event.inputs.version }}"
+            echo "预发布: ${{ github.event.inputs.prerelease }}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo "标签: ${{ github.ref_name }}"
+          fi
+          
           echo ""
-          if [ -d output-x86_64 ]; then
-            IPK_COUNT=$(find output-x86_64 -name "*.ipk" 2>/dev/null | wc -l)
-            echo "📦 生成的IPK数量: $IPK_COUNT"
-            echo "📋 IPK列表:"
-            ls -lh output-x86_64/
-            MAIN_IPK=$(find output-x86_64 -name "*luci-app-openvpn-admin*.ipk" 2>/dev/null | head -1)
-            if [ -n "$MAIN_IPK" ]; then
-              echo "✅ 核心插件: $(basename $MAIN_IPK)"
-              echo "📊 文件大小: $(du -h $MAIN_IPK | cut -f1)"
-              echo "🔍 架构信息:"
-              # 提取IPK中的控制信息
-              tar -xzOf $MAIN_IPK ./control.tar.gz 2>/dev/null | tar -xzO ./control 2>/dev/null | grep -E "Architecture|Version|Package" || echo "无法提取控制信息"
-            else
-              echo "❌ 核心插件编译失败"
-              echo "尝试查找其他openvpn相关包:"
-              find output-x86_64 -name "*openvpn*.ipk" 2>/dev/null || echo "未找到"
+          if [ -d release-artifacts ]; then
+            echo "📦 发布文件:"
+            ls -lh release-artifacts/
+            
+            if [ -f release-artifacts/README.md ]; then
+              echo ""
+              echo "📄 README内容摘要:"
+              head -20 release-artifacts/README.md
             fi
           else
-            echo "❌ 输出目录不存在"
+            echo "❌ 发布目录不存在"
           fi
