@@ -1297,6 +1297,12 @@ function saveConfig() {
         return;
     }
     
+    // 检查IPv6是否启用
+    var enableIPv6 = document.getElementById('enable_ipv6').checked;
+    if (enableIPv6) {
+        console.log("IPv6已启用，保存配置后将执行IPv6脚本");
+    }
+    
     var portNum = parseInt(portValue, 10);
     if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
         alert('端口号必须在1-65535之间');

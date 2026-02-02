@@ -65,6 +65,62 @@ local util = require "luci.util"
             </div>
         </div>
         
+        <!-- IPv6脚本设置 -->
+        <div class="cbi-section">
+            <h3><%:IPv6脚本设置%></h3>
+            <div class="cbi-section-node">
+                <!-- 启用IPv6脚本 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="ipv6_script_enabled">启用IPv6地址更新脚本</label>
+                    <div class="cbi-value-field">
+                        <div class="cbi-input-checkbox">
+                            <input type="checkbox" class="cbi-input-checkbox" id="ipv6_script_enabled" 
+                                   name="ipv6_script_enabled" value="1" <%=config.ipv6_script_enabled and "checked='checked'" or ""%> />
+                            <label for="ipv6_script_enabled"></label>
+                            <input type="hidden" name="ipv6_script_enabled_old" value="<%=config.ipv6_script_enabled and "1" or "0"%>">
+                            <span class="input-description">启用IPv6地址自动更新脚本，需要先配置IPv6脚本路径</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- IPv6脚本路径 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="ipv6_script_path">IPv6脚本路径</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="text" class="cbi-input-text" id="ipv6_script_path" 
+                                   name="ipv6_script_path" value="<%=config.ipv6_script_path or '/usr/bin/openvpn_ipv6'%>" />
+                            <span class="input-description">IPv6地址自动更新脚本路径</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- IPv6脚本运行间隔 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="ipv6_script_interval">脚本运行间隔（分钟）</label>
+                    <div class="cbi-value-field">
+                        <div class="form-input-with-description">
+                            <input type="number" class="cbi-input-text" id="ipv6_script_interval" 
+                                   name="ipv6_script_interval" min="1" max="60" 
+                                   value="<%=config.ipv6_script_interval or 10%>" />
+                            <span class="input-description">IPv6脚本自动运行间隔，1-60分钟</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- 检查脚本按钮 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title">脚本状态检查</label>
+                    <div class="cbi-value-field">
+                        <button type="button" class="cbi-button cbi-button-action" style="margin-weight:-10px;" onclick="checkIpv6Script()">
+                            <%:检查脚本%>
+                        </button>
+                        <span id="ipv6-script-status" style="margin-left: 10px; font-weight: bold;"></span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
         <!-- 状态页面设置 -->
         <div class="cbi-section">
             <h3><%:状态页面设置%></h3>
@@ -582,6 +638,11 @@ function resetToDefaults() {
         document.getElementById('openvpn_instance').value = 'myvpn';
         document.getElementById('openvpn_config_path').value = '/etc/config/openvpn';
         
+        // IPv6脚本设置
+        document.getElementById('ipv6_script_enabled').checked = false;
+        document.getElementById('ipv6_script_path').value = '/usr/bin/openvpn_ipv6';
+        document.getElementById('ipv6_script_interval').value = '10';
+        
         // 状态页面设置
         document.getElementById('refresh_enabled').checked = true;
         document.getElementById('refresh_interval').value = '1';
@@ -615,6 +676,88 @@ function resetToDefaults() {
         document.getElementById('clean_garbage_time').value = '4:50';
         document.getElementById('clean_garbage_script').value = '/etc/openvpn/clean-garbage.sh';
     }
+}
+
+// 检查IPv6脚本是否存在
+function checkIpv6Script() {
+    var scriptPath = document.getElementById('ipv6_script_path').value;
+    
+    if (!scriptPath || scriptPath.trim() === '') {
+        document.getElementById('ipv6-script-status').textContent = '脚本路径不能为空';
+        document.getElementById('ipv6-script-status').style.color = '#dc3545';
+        return;
+    }
+    
+    var url = '<%=luci.dispatcher.build_url("admin/vpn/openvpn-admin/check_ipv6_script")%>';
+    var params = new URLSearchParams();
+    params.append('path', scriptPath);
+    
+    fetch(url + '?' + params.toString(), {
+        method: 'GET',
+        headers: {
+            'Accept': 'application/json'
+        }
+    })
+    .then(function(response) {
+        console.log('响应状态:', response.status, response.statusText);
+        
+        // 检查内容类型
+        const contentType = response.headers.get('content-type');
+        console.log('内容类型:', contentType);
+        
+        if (!response.ok) {
+            // 尝试读取响应文本以了解错误
+            return response.text().then(function(text) {
+                console.error('响应文本:', text.substring(0, 200));
+                throw new Error('网络响应错误: ' + response.status + ' - ' + (text.substring(0, 100) || '无内容'));
+            });
+        }
+        
+        if (!contentType || !contentType.includes('application/json')) {
+            return response.text().then(function(text) {
+                console.error('非JSON响应:', text.substring(0, 200));
+                throw new Error('服务器返回的不是JSON数据: ' + contentType);
+            });
+        }
+        
+        return response.json();
+    })
+    .then(function(result) {
+        console.log('成功响应:', result);
+        var statusElement = document.getElementById('ipv6-script-status');
+        
+        if (result.success) {
+            if (result.exists) {
+                statusElement.textContent = '脚本存在 ✓';
+                statusElement.style.color = '#28a745';
+                
+                if (result.executable) {
+                    statusElement.textContent += ' (可执行)';
+                } else {
+                    statusElement.textContent += ' (不可执行)';
+                }
+                
+                if (result.message) {
+                    statusElement.textContent += ' - ' + result.message;
+                }
+            } else {
+                statusElement.textContent = '脚本不存在: ' + scriptPath;
+                statusElement.style.color = '#dc3545';
+                if (result.message) {
+                    statusElement.textContent += ' - ' + result.message;
+                }
+            }
+        } else {
+            statusElement.textContent = '检查失败: ' + (result.message || '未知错误');
+            statusElement.style.color = '#dc3545';
+        }
+    })
+    .catch(function(error) {
+        console.error('检查脚本失败:', error);
+        var statusElement = document.getElementById('ipv6-script-status');
+        statusElement.textContent = '检查失败: ' + error.message;
+        statusElement.style.color = '#dc3545';
+    });
 }
 
 // 表单提交处理
