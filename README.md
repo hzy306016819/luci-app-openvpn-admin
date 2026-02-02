@@ -101,3 +101,4 @@ luci-app-openvpn-admin/
 "/etc/openvpn/client-connect-cn.sh"                          用于检查客户端CN是否在黑名单中
 "/etc/openvpn/renewcert.sh"                                       证书重置脚本。这个不需要执行权限
 "/etc/openvpn/clean-garbage.sh"                               OpenVPN管理界面垃圾文件清理脚本
+"/etc/openvpn/openvpn_ipv6"                                 新增ipv6更新脚本，获取pppoe-wan的地址更新openvpn配置文件的ipv6地址。
