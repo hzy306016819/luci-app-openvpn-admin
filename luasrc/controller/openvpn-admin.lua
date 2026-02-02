@@ -49,7 +49,12 @@ function get_admin_config()
         clean_garbage_enabled = true,
         clean_garbage_time = "4:50",
         clean_garbage_script = "/etc/openvpn/clean-garbage.sh",
-        server_template_path = "/etc/openvpn/template/server.template"
+        server_template_path = "/etc/openvpn/template/server.template",
+        
+        -- IPv6脚本配置
+        ipv6_script_path = "/etc/openvpn/openvpn_ipv6",
+        ipv6_script_interval = 10,  -- 默认10分钟
+        ipv6_script_enabled = false, -- 默认禁用
     }
     
     -- 尝试从uci配置中读取
@@ -65,7 +70,9 @@ function get_admin_config()
             "generate_client_script", "renew_cert_script",
             -- 新增配置项
             "temp_dir", "clean_garbage_enabled", "clean_garbage_time",
-            "clean_garbage_script", "server_template_path"
+            "clean_garbage_script", "server_template_path",
+            -- IPv6脚本配置
+            "ipv6_script_path", "ipv6_script_interval", "ipv6_script_enabled"
         }
         
         for _, key in ipairs(configs) do
@@ -241,6 +248,91 @@ function update_cron_job()
         return true
     end
     return false
+end
+
+-- 更新IPv6脚本定时任务
+function update_ipv6_cron_job()
+    local config = get_admin_config()
+    local cron_file = "/etc/crontabs/root"
+    
+    -- 读取现有的cron文件
+    local cron_content = ""
+    if sys.call("test -f " .. cron_file .. " 2>/dev/null") == 0 then
+        cron_content = sys.exec("cat " .. cron_file .. " 2>/dev/null")
+    end
+    
+    -- 移除旧的IPv6脚本定时任务
+    local new_lines = {}
+    local in_ipv6_section = false
+    for line in cron_content:gmatch("[^\r\n]+") do
+        if line:match("^# OpenVPN IPv6地址更新任务") then
+            in_ipv6_section = true
+        elseif in_ipv6_section and line:match("^#") then
+            in_ipv6_section = false
+            table.insert(new_lines, line)
+        elseif not in_ipv6_section then
+            table.insert(new_lines, line)
+        end
+    end
+    
+    -- 如果启用IPv6脚本且脚本存在，添加定时任务
+    if config.ipv6_script_enabled and config.ipv6_script_path then
+        local script_exists = sys.call("test -f " .. config.ipv6_script_path .. " 2>/dev/null") == 0
+        
+        if script_exists then
+            -- 添加注释
+            table.insert(new_lines, "# OpenVPN IPv6地址更新任务 - 每" .. config.ipv6_script_interval .. "分钟执行")
+            
+            -- 添加定时任务，格式：*/interval * * * * command
+            local cron_line = string.format("*/%d * * * * %s 2>&1", config.ipv6_script_interval, config.ipv6_script_path)
+            table.insert(new_lines, cron_line)
+            
+            -- 确保脚本有执行权限
+            sys.exec("chmod +x " .. config.ipv6_script_path .. " 2>/dev/null")
+        else
+            table.insert(new_lines, "# OpenVPN IPv6地址更新任务 - 脚本不存在: " .. config.ipv6_script_path)
+        end
+    else
+        table.insert(new_lines, "# OpenVPN IPv6地址更新任务 - 已禁用")
+    end
+    
+    -- 写入新的cron文件
+    local temp_cron = "/tmp/root.cron.tmp"
+    local fd = io.open(temp_cron, "w")
+    if fd then
+        fd:write(table.concat(new_lines, "\n"))
+        fd:close()
+        sys.exec("mv " .. temp_cron .. " " .. cron_file .. " 2>/dev/null")
+        sys.exec("chmod 644 " .. cron_file .. " 2>/dev/null")
+        sys.exec("/etc/init.d/cron restart 2>/dev/null")
+        return true
+    end
+    return false
+end
+
+-- 运行IPv6脚本（如果启用）
+function run_ipv6_script_if_enabled()
+    local config = get_admin_config()
+    
+    if config.ipv6_script_enabled and config.ipv6_script_path then
+        local script_exists = sys.call("test -f " .. config.ipv6_script_path .. " 2>/dev/null") == 0
+        
+        if script_exists then
+            -- 确保脚本有执行权限
+            sys.exec("chmod +x " .. config.ipv6_script_path .. " 2>/dev/null")
+            
+            -- 运行脚本并记录日志
+            local output = sys.exec(config.ipv6_script_path .. " 2>&1")
+            nixio.syslog("info", "OpenVPN IPv6脚本执行结果: " .. output)
+            
+            return true
+        else
+            nixio.syslog("warning", "IPv6脚本不存在: " .. config.ipv6_script_path)
+            return false
+        end
+    end
+    
+    return nil  -- 表示脚本未启用
 end
 
 -- 创建垃圾清理脚本
@@ -578,6 +670,94 @@ function index()
     -- AJAX接口：检查防火墙规则（新增）
     entry({"admin", "vpn", "openvpn-admin", "check_firewall"}, 
           call("check_firewall_rule_ajax"))
+          
+    -- AJAX接口：检查IPv6脚本是否存在
+    entry({"admin", "vpn", "openvpn-admin", "check_ipv6_script"}, 
+          call("action_check_ipv6_script"),  -- 修改函数名为action_check_ipv6_script
+          nil).leaf = true   
+end
+
+-- 检查IPv6脚本函数
+function action_check_ipv6_script()
+    -- 这个版本完全手动处理，不依赖任何可能缺失的库
+    local req = require "luci.http"
+    
+    -- 立即设置响应类型
+    req.header("Content-Type", "text/plain")  -- 先设为文本
+    
+    local result = {}
+    
+    -- 获取参数
+    local query_string = os.getenv("QUERY_STRING") or ""
+    local path = ""
+    
+    -- 手动解析查询字符串
+    for param in query_string:gmatch("[^&]+") do
+        local key, value = param:match("([^=]+)=?(.*)")
+        if key == "path" then
+            path = req.urldecode(value or "")
+            break
+        end
+    end
+    
+    -- 如果路径为空，使用默认值
+    if path == "" then
+        local config = get_admin_config()
+        path = config.ipv6_script_path or "/etc/openvpn/openvpn_ipv6"
+    end
+    
+    -- 检查文件
+    local exists = os.execute("test -f " .. path .. " 2>/dev/null") == 0
+    local executable = os.execute("test -x " .. path .. " 2>/dev/null") == 0
+    local valid = false
+    
+    if exists then
+        local f = io.open(path, "r")
+        if f then
+            local first_line = f:read("*l") or ""
+            f:close()
+            if first_line:find("^#!/bin/sh") or first_line:find("^#!/bin/bash") then
+                valid = true
+                result.message = "有效的shell脚本"
+            else
+                result.message = "不是有效的shell脚本"
+            end
+        else
+            result.message = "无法读取文件"
+        end
+    else
+        result.message = "文件不存在: " .. path
+    end
+    
+    -- 构建结果
+    result.success = exists
+    result.exists = exists
+    result.executable = executable
+    result.valid = valid
+    result.path = path
+    
+    -- 输出JSON（手动格式）
+    local json = string.format(
+        '{\n' ..
+        '  "success": %s,\n' ..
+        '  "exists": %s,\n' ..
+        '  "executable": %s,\n' ..
+        '  "valid": %s,\n' ..
+        '  "message": "%s",\n' ..
+        '  "path": "%s"\n' ..
+        '}',
+        tostring(result.success):lower(),
+        tostring(result.exists):lower(),
+        tostring(result.executable):lower(),
+        tostring(result.valid):lower(),
+        (result.message or ""):gsub('"', '\\"'),
+        (result.path or ""):gsub('"', '\\"')
+    )
+    
+    req.header("Content-Type", "application/json")
+    req.write(json)
+    
+    return
 end
 
 -- 设置页面
@@ -661,6 +841,9 @@ function save_admin_config()
         
         -- 更新cron任务
         update_cron_job()
+        
+        -- 更新IPv6定时任务
+        update_ipv6_cron_job()
         
         -- 确保临时目录存在
         local config = get_admin_config()
@@ -2957,6 +3140,29 @@ function save_openvpn_uci_config()
         if commit_ok then
             -- 获取新配置的端口
             local new_port = http.formvalue("port") or uci:get("openvpn", instance, "port") or old_port
+            
+            -- 检查IPv6是否启用
+            local enable_ipv6 = http.formvalue("enable_ipv6")
+            if enable_ipv6 and enable_ipv6 == "1" then
+                -- 获取IPv6脚本配置
+                local config = get_admin_config()
+                
+                if config.ipv6_script_enabled then
+                    -- 运行IPv6脚本
+                    local script_result = run_ipv6_script_if_enabled()
+                    if script_result == false then
+                        result.message = result.message .. " (警告：IPv6脚本不存在)"
+                    elseif script_result == true then
+                        result.message = result.message .. " (IPv6脚本已执行)"
+                    end
+                    
+                    -- 更新IPv6定时任务
+                    update_ipv6_cron_job()
+                end
+            else
+                -- 如果禁用了IPv6，也更新定时任务（会移除IPv6定时任务）
+                update_ipv6_cron_job()
+            end
             
             -- 如果端口发生变化，或者之前没有端口但现在有了，则更新防火墙规则
             if new_port then
