@@ -35,26 +35,31 @@ function get_admin_config()
         easyrsa_pki = "/etc/easy-rsa/pki",
         openvpn_pki = "/etc/openvpn/pki",
         
-        -- 新增日志页面配置
+        -- 日志页面配置
         logs_refresh_enabled = true,
         logs_refresh_interval = 10,
         logs_display_lines = 1000,
         
-        -- 新增脚本路径配置
+        -- 脚本路径配置
         generate_client_script = "/etc/openvpn/generate-client.sh",
         renew_cert_script = "/etc/openvpn/renewcert.sh",
         
-        -- 新增配置项
+        -- 配置项
         temp_dir = "/tmp/openvpn-admin",
         clean_garbage_enabled = true,
         clean_garbage_time = "4:50",
         clean_garbage_script = "/etc/openvpn/clean-garbage.sh",
-        server_template_path = "/etc/openvpn/template/server.template",
+        
+        -- 新增hotplug配置
+        hotplug_enabled = false,
+        hotplug_interface = "",
+        hotplug_ipv6_address = "",
+        hotplug_script_path = "/etc/openvpn/openvpn_hotplug.sh",
         
         -- IPv6脚本配置
         ipv6_script_path = "/etc/openvpn/openvpn_ipv6",
         ipv6_script_interval = 10,  -- 默认10分钟
-        ipv6_script_enabled = false, -- 默认禁用
+        ipv6_script_enabled = false -- 默认禁用
     }
     
     -- 尝试从uci配置中读取
@@ -70,25 +75,31 @@ function get_admin_config()
             "generate_client_script", "renew_cert_script",
             -- 新增配置项
             "temp_dir", "clean_garbage_enabled", "clean_garbage_time",
-            "clean_garbage_script", "server_template_path",
+            "clean_garbage_script",
             -- IPv6脚本配置
-            "ipv6_script_path", "ipv6_script_interval", "ipv6_script_enabled"
+            "ipv6_script_path", "ipv6_script_interval", "ipv6_script_enabled",
+            -- 新增hotplug配置项
+            "hotplug_enabled", "hotplug_interface", "hotplug_ipv6_address",
+            "hotplug_script_path"
         }
         
         for _, key in ipairs(configs) do
-            local value = uci:get("openvpn-admin", uci_section, key)
-            if value then
-                if key == "refresh_enabled" or key == "blacklist_enabled" or 
-                   key == "logs_refresh_enabled" or key == "clean_garbage_enabled" then
-                    admin_config[key] = (value == "1")
-                elseif key == "refresh_interval" or key == "history_size" or key == "blacklist_duration" or 
-                       key == "logs_refresh_interval" or key == "logs_display_lines" then
-                    admin_config[key] = tonumber(value)
-                else
-                    admin_config[key] = value
-                end
-            end
+    local value = uci:get("openvpn-admin", uci_section, key)
+    if value then
+        if key == "refresh_enabled" or key == "blacklist_enabled" or 
+           key == "logs_refresh_enabled" or key == "clean_garbage_enabled" or
+           key == "ipv6_script_enabled" or key == "hotplug_enabled" then
+            admin_config[key] = (value == "1")
+        -- 处理数值转换
+                elseif key == "refresh_interval" or key == "history_size" or 
+                       key == "blacklist_duration" or key == "logs_refresh_interval" or 
+                       key == "logs_display_lines" or key == "ipv6_script_interval" then
+            admin_config[key] = tonumber(value)
+        else
+            admin_config[key] = value
         end
+    end
+end
     end
     
     return admin_config
@@ -125,7 +136,6 @@ end
 function get_blacklist_config()
     local config = get_admin_config()
     return {
-        enabled = config.blacklist_enabled,
         duration = config.blacklist_duration,
         file = config.blacklist_file
     }
@@ -179,35 +189,32 @@ function get_temp_dir()
     return config.temp_dir or "/tmp/openvpn-admin"
 end
 
--- 获取服务器模板路径
-function get_server_template_path()
-    local config = get_admin_config()
-    return config.server_template_path or "/etc/openvpn/template/server.template"
+-- 更新cron任务
+-- 清理cron文件中的特定关键词行
+function clean_cron_lines(content, keywords)
+    local new_lines = {}
+    for line in content:gmatch("[^\r\n]+") do
+        local skip = false
+        
+        -- 检查是否包含任何关键词
+        for _, keyword in ipairs(keywords) do
+            if line:match(keyword) then
+                skip = true
+                break
+            end
+        end
+        
+        if not skip then
+            table.insert(new_lines, line)
+        end
+    end
+    
+    return new_lines
 end
 
--- 更新cron任务
 function update_cron_job()
     local config = get_admin_config()
     local cron_file = "/etc/crontabs/root"
-    local cron_line = string.format("# OpenVPN管理插件垃圾清理任务 - 每天%s执行\n", config.clean_garbage_time)
-    
-    if config.clean_garbage_enabled then
-        -- 解析时间
-        local hour, minute = config.clean_garbage_time:match("(%d+):(%d+)")
-        if not hour or not minute then
-            hour, minute = "4", "50"  -- 默认值
-        end
-        
-        local script_path = config.clean_garbage_script or "/etc/openvpn/clean-garbage.sh"
-        cron_line = cron_line .. string.format("%s %s * * * %s\n", minute, hour, script_path)
-        
-        -- 检查脚本是否存在，如果不存在则创建
-        if sys.call("test -f " .. script_path .. " 2>/dev/null") ~= 0 then
-            create_clean_garbage_script(script_path, config.temp_dir)
-        end
-    else
-        cron_line = cron_line .. "# 垃圾清理功能已禁用\n"
-    end
     
     -- 读取现有的cron文件
     local cron_content = ""
@@ -215,28 +222,28 @@ function update_cron_job()
         cron_content = sys.exec("cat " .. cron_file .. " 2>/dev/null")
     end
     
-    -- 移除旧的OpenVPN管理插件cron任务
-    local new_lines = {}
-    local in_our_section = false
-    for line in cron_content:gmatch("[^\r\n]+") do
-        if line:match("^# OpenVPN管理插件垃圾清理任务") then
-            in_our_section = true
-        elseif in_our_section and line:match("^#") then
-            in_our_section = false
-            table.insert(new_lines, line)
-        elseif not in_our_section then
-            table.insert(new_lines, line)
+    -- 移除所有OpenVPN相关的行（包括注释）
+    local keywords = {"[Oo]pen[Vv][Pp][Nn]", "clean%-garbage", "垃圾清理"}
+    local new_lines = clean_cron_lines(cron_content, keywords)
+    
+    -- 只有在启用时才添加任务行（不加注释）
+    if config.clean_garbage_enabled then
+        local hour, minute = config.clean_garbage_time:match("(%d+):(%d+)")
+        if not hour or not minute then
+            hour, minute = "4", "50"
         end
+        
+        local script_path = config.clean_garbage_script or "/etc/openvpn/clean-garbage.sh"
+        
+        if sys.call("test -f " .. script_path .. " 2>/dev/null") ~= 0 then
+            create_clean_garbage_script(script_path, config.temp_dir)
+        end
+        
+        -- 只添加任务行，不加注释
+        table.insert(new_lines, string.format("%s %s * * * %s", minute, hour, script_path))
     end
     
-    -- 添加新的cron任务
-    for line in cron_line:gmatch("[^\r\n]+") do
-        if config.clean_garbage_enabled or line:match("^#") then
-            table.insert(new_lines, line)
-        end
-    end
-    
-    -- 写入新的cron文件
+    -- 写入文件
     local temp_cron = "/tmp/root.cron.tmp"
     local fd = io.open(temp_cron, "w")
     if fd then
@@ -250,7 +257,6 @@ function update_cron_job()
     return false
 end
 
--- 更新IPv6脚本定时任务
 function update_ipv6_cron_job()
     local config = get_admin_config()
     local cron_file = "/etc/crontabs/root"
@@ -261,42 +267,24 @@ function update_ipv6_cron_job()
         cron_content = sys.exec("cat " .. cron_file .. " 2>/dev/null")
     end
     
-    -- 移除旧的IPv6脚本定时任务
-    local new_lines = {}
-    local in_ipv6_section = false
-    for line in cron_content:gmatch("[^\r\n]+") do
-        if line:match("^# OpenVPN IPv6地址更新任务") then
-            in_ipv6_section = true
-        elseif in_ipv6_section and line:match("^#") then
-            in_ipv6_section = false
-            table.insert(new_lines, line)
-        elseif not in_ipv6_section then
-            table.insert(new_lines, line)
-        end
-    end
+    -- 移除所有IPv6相关的行（包括注释）
+    local keywords = {"[Ii][Pp]v6", "openvpn_ipv6"}
+    local new_lines = clean_cron_lines(cron_content, keywords)
     
-    -- 如果启用IPv6脚本且脚本存在，添加定时任务
+    -- 如果启用IPv6脚本，只添加任务行（不加注释）
     if config.ipv6_script_enabled and config.ipv6_script_path then
         local script_exists = sys.call("test -f " .. config.ipv6_script_path .. " 2>/dev/null") == 0
         
         if script_exists then
-            -- 添加注释
-            table.insert(new_lines, "# OpenVPN IPv6地址更新任务 - 每" .. config.ipv6_script_interval .. "分钟执行")
+            -- 只添加定时任务行，不加注释
+            table.insert(new_lines, string.format("*/%d * * * * %s 2>&1", 
+                config.ipv6_script_interval, config.ipv6_script_path))
             
-            -- 添加定时任务，格式：*/interval * * * * command
-            local cron_line = string.format("*/%d * * * * %s 2>&1", config.ipv6_script_interval, config.ipv6_script_path)
-            table.insert(new_lines, cron_line)
-            
-            -- 确保脚本有执行权限
             sys.exec("chmod +x " .. config.ipv6_script_path .. " 2>/dev/null")
-        else
-            table.insert(new_lines, "# OpenVPN IPv6地址更新任务 - 脚本不存在: " .. config.ipv6_script_path)
         end
-    else
-        table.insert(new_lines, "# OpenVPN IPv6地址更新任务 - 已禁用")
     end
     
-    -- 写入新的cron文件
+    -- 写入文件
     local temp_cron = "/tmp/root.cron.tmp"
     local fd = io.open(temp_cron, "w")
     if fd then
@@ -309,6 +297,8 @@ function update_ipv6_cron_job()
     end
     return false
 end
+
+
 
 -- 运行IPv6脚本（如果启用）
 function run_ipv6_script_if_enabled()
@@ -390,6 +380,203 @@ exit 0
         fd:write(script_content)
         fd:close()
         sys.exec("chmod +x " .. script_path .. " 2>/dev/null")
+        return true
+    end
+    return false
+end
+
+-- 创建hotplug脚本
+function create_hotplug_script(config)
+    local script_path = config.hotplug_script_path or "/etc/openvpn/openvpn_hotplug.sh"
+    local dir = script_path:match("^(.*/)[^/]*$")
+    
+    if dir then
+        sys.exec("mkdir -p " .. dir .. " 2>/dev/null")
+    end
+    
+    local script_content = [[
+#!/bin/sh
+
+# OpenVPN Hotplug IPv6地址更新脚本
+# 自动检测网络接口变化并更新OpenVPN的IPv6地址
+
+# 配置文件
+CONFIG_FILE="/etc/config/openvpn"
+OPENVPN_SECTION="]] .. (config.openvpn_instance or "myvpn") .. [["
+MONITOR_INTERFACE="]] .. (config.hotplug_interface or "") .. [["
+LOG_DIR="]] .. (config.temp_dir or "/tmp/openvpn-admin") .. [["
+LOG_FILE="$LOG_DIR/hotplug_ipv6.log"
+MAX_LOG_LINES=50
+
+# 确保日志目录存在
+mkdir -p "$LOG_DIR" 2>/dev/null
+
+# 优化的日志函数
+log_message() {
+    local message="$(date '+%Y-%m-%d %H:%M:%S') - $1"
+    local temp_file="${LOG_FILE}.tmp"
+    
+    # 如果日志文件存在且行数超过限制，保留最新的(MAX_LOG_LINES-1)行
+    if [ -f "$LOG_FILE" ]; then
+        tail -n $((MAX_LOG_LINES - 1)) "$LOG_FILE" > "$temp_file" 2>/dev/null
+    fi
+    
+    # 添加新日志
+    echo "$message" >> "$temp_file"
+    
+    # 替换原日志文件
+    mv "$temp_file" "$LOG_FILE" 2>/dev/null || true
+}
+
+# 获取指定接口的公网IPv6地址
+get_public_ipv6() {
+    local interface="$1"
+    
+    if [ -z "$interface" ]; then
+        echo ""
+        return 1
+    fi
+    
+    # 获取全局IPv6地址（非本地链路地址，以2开头的公网地址）
+    ip -6 addr show dev "$interface" 2>/dev/null | \
+        grep -E 'inet6.*global' | \
+        grep -v 'deprecated' | \
+        awk '{print $2}' | \
+        cut -d'/' -f1 | \
+        grep -E '^2[0-9a-f][0-9a-f][0-9a-f]' | \
+        head -1
+}
+
+# 获取配置的IPv6地址
+get_configured_ipv6() {
+    uci -q get openvpn.$OPENVPN_SECTION.local 2>/dev/null
+}
+
+# 检查OpenVPN是否启用了IPv6
+openvpn_has_ipv6() {
+    uci -q get openvpn.$OPENVPN_SECTION.local >/dev/null 2>&1
+    return $?
+}
+
+# 主处理函数
+process_interface_change() {
+    local action="$1"
+    local interface="$2"
+    
+    log_message "接口事件: $action $interface"
+    
+    # 只处理我们监控的接口
+    if [ "$interface" != "$MONITOR_INTERFACE" ]; then
+        log_message "忽略非监控接口: $interface"
+        return 0
+    fi
+    
+    if [ "$action" = "ifup" ] || [ "$action" = "ifupdate" ]; then
+        log_message "检测到接口 $interface 状态变化"
+        
+        # 等待网络稳定
+        sleep 2
+        
+        # 获取当前IPv6地址
+        current_ipv6=$(get_public_ipv6 "$interface")
+        
+        if [ -z "$current_ipv6" ]; then
+            log_message "警告: 接口 $interface 上没有可用的公网IPv6地址"
+            return 1
+        fi
+        
+        log_message "当前IPv6地址: $current_ipv6"
+        
+        # 检查OpenVPN是否启用了IPv6
+        if openvpn_has_ipv6; then
+            configured_ipv6=$(get_configured_ipv6)
+            
+            if [ -z "$configured_ipv6" ]; then
+                log_message "OpenVPN配置中无IPv6地址，设置为: $current_ipv6"
+                uci set openvpn.$OPENVPN_SECTION.local="$current_ipv6"
+                uci commit openvpn
+                /etc/init.d/openvpn restart
+                log_message "OpenVPN已重启"
+            elif [ "$current_ipv6" != "$configured_ipv6" ]; then
+                log_message "IPv6地址变更: $configured_ipv6 -> $current_ipv6"
+                uci set openvpn.$OPENVPN_SECTION.local="$current_ipv6"
+                uci commit openvpn
+                /etc/init.d/openvpn restart
+                log_message "OpenVPN已重启"
+            else
+                log_message "IPv6地址一致，无需更新"
+            fi
+        else
+            log_message "OpenVPN未启用IPv6，跳过地址更新"
+        fi
+    fi
+    
+    return 0
+}
+
+# 主逻辑
+case "$1" in
+    ifup|ifdown|ifupdate)
+        if [ -n "$2" ]; then
+            process_interface_change "$1" "$2"
+        fi
+        ;;
+    *)
+        log_message "未知操作: $1"
+        exit 1
+        ;;
+esac
+
+exit 0
+]]
+    
+    local fd = io.open(script_path, "w")
+    if fd then
+        fd:write(script_content)
+        fd:close()
+        sys.exec("chmod +x " .. script_path .. " 2>/dev/null")
+        
+        -- 创建hotplug配置目录和文件
+        create_hotplug_config(config)
+        
+        return true
+    end
+    return false
+end
+
+-- 创建hotplug配置文件
+function create_hotplug_config(config)
+    local hotplug_dir = "/etc/hotplug.d/iface"
+    local hotplug_script = config.hotplug_script_path or "/etc/openvpn/openvpn_hotplug.sh"
+    
+    -- 确保hotplug目录存在
+    sys.exec("mkdir -p " .. hotplug_dir .. " 2>/dev/null")
+    
+    local config_content = [[
+#!/bin/sh
+
+# OpenVPN Hotplug配置
+# 自动监控网络接口变化
+
+[ "$ACTION" = "ifup" -o "$ACTION" = "ifdown" -o "$ACTION" = "ifupdate" ] || exit 0
+
+# 只处理我们关心的接口
+INTERFACE_TO_MONITOR="]] .. (config.hotplug_interface or "") .. [["
+
+if [ "$INTERFACE" = "$INTERFACE_TO_MONITOR" ]; then
+    # 执行OpenVPN hotplug脚本
+    ]] .. hotplug_script .. [[ "$ACTION" "$INTERFACE" &
+fi
+
+exit 0
+]]
+    
+    local config_file = hotplug_dir .. "/99-openvpn-admin"
+    local fd = io.open(config_file, "w")
+    if fd then
+        fd:write(config_content)
+        fd:close()
+        sys.exec("chmod +x " .. config_file .. " 2>/dev/null")
         return true
     end
     return false
@@ -671,10 +858,129 @@ function index()
     entry({"admin", "vpn", "openvpn-admin", "check_firewall"}, 
           call("check_firewall_rule_ajax"))
           
+    -- 新增AJAX接口：获取网络接口列表
+    entry({"admin", "vpn", "openvpn-admin", "get_interfaces"}, 
+          call("action_get_interfaces"))
+    
+    -- 新增AJAX接口：获取接口IPv6地址
+    entry({"admin", "vpn", "openvpn-admin", "get_interface_ipv6"}, 
+          call("action_get_interface_ipv6"))      
+          
     -- AJAX接口：检查IPv6脚本是否存在
     entry({"admin", "vpn", "openvpn-admin", "check_ipv6_script"}, 
           call("action_check_ipv6_script"),  -- 修改函数名为action_check_ipv6_script
           nil).leaf = true   
+end
+
+-- 获取网络接口列表
+function action_get_interfaces()
+    local result = {
+        success = false,
+        interfaces = {},
+        message = ""
+    }
+    
+    -- 直接获取所有活跃的网络接口
+    local cmd = "ip -o link show 2>/dev/null | grep -v 'LOOPBACK' | grep -v 'link-netns' | awk '{print $2}' | sed 's/:$//'"
+    local output = sys.exec(cmd)
+    
+    if output and output ~= "" then
+        for ifname in output:gmatch("[^\r\n]+") do
+            ifname = util.trim(ifname)
+            
+            -- 跳过虚拟接口和docker接口
+            if not ifname:match("^lo$") and 
+               not ifname:match("^docker") and 
+               not ifname:match("^veth") and
+               not ifname:match("^ip6tnl") and
+               not ifname:match("^tunl") and
+               not ifname:match("^sit") and
+               not ifname:match("^dummy") and
+               not ifname:match("^gre") and
+               not ifname:match("^gretap") and
+               not ifname:match("^erspan") and
+               not ifname:match("^siit") and
+               not ifname:match("^teql") then
+                
+                -- 检查接口状态
+                local status_cmd = "cat /sys/class/net/" .. ifname .. "/operstate 2>/dev/null || echo 'down'"
+                local status = sys.exec(status_cmd)
+                status = util.trim(status or "down")
+                
+                -- 获取接口类型
+                local type_cmd = "cat /sys/class/net/" .. ifname .. "/type 2>/dev/null || echo '0'"
+                local iftype = tonumber(sys.exec(type_cmd)) or 0
+                
+                -- 1=ethernet, 32=bridge, 772=loopback, 65534=tun/tap
+                if iftype == 1 or iftype == 32 or iftype == 65534 then
+                    table.insert(result.interfaces, {
+                        name = ifname,
+                        status = (status == "up") and "up" or "down",
+                        display = ifname .. " (" .. status:upper() .. ")",
+                        config_name = ifname
+                    })
+                end
+            end
+        end
+    end
+    
+    -- 按名称排序
+    table.sort(result.interfaces, function(a, b)
+        return a.name < b.name
+    end)
+    
+    result.success = true
+    
+    http.write_json(result)
+end
+
+-- 获取指定接口的IPv6地址
+function action_get_interface_ipv6()
+    local result = {
+        success = false,
+        ipv6_address = "",
+        message = ""
+    }
+    
+    local interface = http.formvalue("interface")
+    
+    if not interface or interface == "" then
+        result.message = "未指定网络接口"
+        http.write_json(result)
+        return
+    end
+    
+    -- 获取接口的所有IPv6地址
+    local cmd = "ip -6 addr show dev " .. interface .. " 2>/dev/null | grep 'inet6.*global'"
+    local ipv6_output = sys.exec(cmd)
+    
+    if ipv6_output and ipv6_output ~= "" then
+        -- 优先选择公网IPv6地址
+        for line in ipv6_output:gmatch("[^\r\n]+") do
+            local ipv6_address = line:match("inet6%s+([%x:]+)/")
+            if ipv6_address then
+                -- 检查是否是公网地址 (240e:: 开头)
+                if ipv6_address:match("^240e:") then
+                    result.ipv6_address = ipv6_address
+                    result.success = true
+                    break
+                end
+                -- 如果没有公网地址，使用第一个找到的全局地址
+                if result.ipv6_address == "" then
+                    result.ipv6_address = ipv6_address
+                    result.success = true
+                end
+            end
+        end
+        
+        if result.ipv6_address == "" then
+            result.message = "接口 " .. interface .. " 没有全局IPv6地址"
+        end
+    else
+        result.message = "接口 " .. interface .. " 没有全局IPv6地址"
+    end
+    
+    http.write_json(result)
 end
 
 -- 检查IPv6脚本函数
@@ -795,8 +1101,8 @@ function save_admin_config()
         "refresh_enabled",
         "refresh_interval",
         "history_size",
-        "blacklist_enabled",
         "blacklist_duration",
+        "blacklist_file",
         "log_file",
         "history_file",
         "blacklist_file",
@@ -813,7 +1119,15 @@ function save_admin_config()
         "clean_garbage_enabled",
         "clean_garbage_time",
         "clean_garbage_script",
-        "server_template_path"
+        -- 新增：IPv6脚本配置
+        "ipv6_script_path",
+        "ipv6_script_interval",
+        "ipv6_script_enabled",
+        -- 新增hotplug配置
+        "hotplug_enabled",
+        "hotplug_interface",
+        "hotplug_ipv6_address",
+        "hotplug_script_path"
     }
     
     local section = uci:get_first("openvpn-admin", "settings")
@@ -845,8 +1159,19 @@ function save_admin_config()
         -- 更新IPv6定时任务
         update_ipv6_cron_job()
         
-        -- 确保临时目录存在
+        -- -- 获取更新后的配置
         local config = get_admin_config()
+        
+        -- 如果启用了hotplug，创建或更新脚本
+        if config.hotplug_enabled and config.hotplug_interface ~= "" then
+            create_hotplug_script(config)
+            -- 设置hotplug脚本的执行权限
+            if config.hotplug_script_path then
+                sys.exec("chmod +x " .. config.hotplug_script_path .. " 2>/dev/null")
+            end
+        end
+        
+        -- 确保临时目录存在
         sys.exec("mkdir -p " .. config.temp_dir .. " 2>/dev/null")
         
         result.success = true
@@ -2051,12 +2376,6 @@ function get_blacklist_cn()
     
     local blacklist_config = get_blacklist_config()
     
-    if not blacklist_config.enabled then
-        result.message = "黑名单功能已禁用"
-        http.write_json(result)
-        return
-    end
-    
     local blacklist = get_client_blacklist_cn()
     
     result.data = blacklist
@@ -2121,13 +2440,7 @@ function add_client_to_blacklist()
     }
     
     local blacklist_config = get_blacklist_config()
-    
-    if not blacklist_config.enabled then
-        result.message = "黑名单功能已禁用"
-        http.write_json(result)
-        return
-    end
-    
+        
     local cn = http.formvalue("cn")
     local duration = http.formvalue("duration")
     
@@ -2441,21 +2754,42 @@ function generate_client_config()
         local script_content = [[
 #!/bin/sh
 # OpenVPN客户端证书生成和配置文件生成脚本
+# 参考genovpn.sh的原理，但不修改原文件
 
-# 设置变量
-EASYRSA_DIR="]] .. cert_paths.easyrsa_dir .. [["
-EASYRSA_PKI="]] .. cert_paths.easyrsa_pki .. [["
-OPENVPN_PKI="]] .. cert_paths.openvpn_pki .. [["
+# 读取openvpn-admin配置
+if [ -f /etc/config/openvpn-admin ]; then
+    # 从配置文件中读取相关路径
+    EASYRSA_DIR=$(uci -q get openvpn-admin.@settings[0].easyrsa_dir 2>/dev/null || echo "/etc/easy-rsa")
+    EASYRSA_PKI=$(uci -q get openvpn-admin.@settings[0].easyrsa_pki 2>/dev/null || echo "/etc/easy-rsa/pki")
+    OPENVPN_PKI=$(uci -q get openvpn-admin.@settings[0].openvpn_pki 2>/dev/null || echo "/etc/openvpn/pki")
+    OPENVPN_INSTANCE=$(uci -q get openvpn-admin.@settings[0].openvpn_instance 2>/dev/null || echo "myvpn")
+else
+    # 默认值
+    EASYRSA_DIR="/etc/easy-rsa"
+    EASYRSA_PKI="$EASYRSA_DIR/pki"
+    OPENVPN_PKI="/etc/openvpn/pki"
+    OPENVPN_INSTANCE="myvpn"
+fi
+
 EASYRSA_VARS="$EASYRSA_DIR/vars-server"
+TEMP_DIR="/tmp/openvpn-client"
+
+# 参数检查
+if [ -z "$1" ]; then
+    echo "错误: 请指定客户端名称"
+    exit 1
+fi
 
 CLIENT_NAME="$1"
-OUTPUT_FILE="$2"
+OUTPUT_FILE="${2:-/tmp/$CLIENT_NAME.ovpn}"
 
-# 从OpenVPN配置获取服务器配置
-INSTANCE="]] .. instance .. [["
-DDNS=$(uci get openvpn.$INSTANCE.ddns 2>/dev/null || echo "")
-PORT=$(uci get openvpn.$INSTANCE.port 2>/dev/null || echo "1194")
-PROTO=$(uci get openvpn.$INSTANCE.proto 2>/dev/null || echo "udp")
+# 创建临时目录
+mkdir -p "$TEMP_DIR"
+
+# 获取服务器配置 - 使用配置中的实例名称
+DDNS=$(uci get openvpn.$OPENVPN_INSTANCE.ddns 2>/dev/null || echo "")
+PORT=$(uci get openvpn.$OPENVPN_INSTANCE.port 2>/dev/null || echo "1194")
+PROTO=$(uci get openvpn.$OPENVPN_INSTANCE.proto 2>/dev/null || echo "udp")
 
 # 如果获取不到DDNS，尝试获取WAN IP
 if [ -z "$DDNS" ] || [ "$DDNS" = "exmple.com" ]; then
@@ -2466,8 +2800,25 @@ if [ -z "$DDNS" ] || [ "$DDNS" = "exmple.com" ]; then
 fi
 
 # 检查证书是否存在
-if [ ! -f "$EASYRSA_PKI/issued/$CLIENT_NAME.crt" ] || [ ! -f "$EASYRSA_PKI/private/$CLIENT_NAME.key" ]; then
-    echo "正在生成客户端证书: $CLIENT_NAME"
+check_client_cert() {
+    local client_name="$1"
+    
+    # 检查是否已存在客户端证书
+    if [ -f "$EASYRSA_PKI/issued/$client_name.crt" ] && \
+       [ -f "$EASYRSA_PKI/private/$client_name.key" ]; then
+        echo "客户端证书已存在: $client_name"
+        return 0
+    fi
+    
+    echo "客户端证书不存在: $client_name"
+    return 1
+}
+
+# 生成客户端证书
+generate_client_cert() {
+    local client_name="$1"
+    
+    echo "正在生成客户端证书: $client_name"
     
     # 设置环境变量
     export EASYRSA_PKI="$EASYRSA_PKI"
@@ -2477,18 +2828,61 @@ if [ ! -f "$EASYRSA_PKI/issued/$CLIENT_NAME.crt" ] || [ ! -f "$EASYRSA_PKI/priva
     # 切换到EasyRSA目录
     cd "$EASYRSA_DIR" || exit 1
     
-    # 生成客户端证书
-    easyrsa build-client-full "$CLIENT_NAME" nopass >/dev/null 2>&1
+    # 生成客户端证书（非交互模式）
+    echo "正在生成证书..."
+    if ! easyrsa build-client-full "$client_name" nopass >/dev/null 2>&1; then
+        # 如果失败，尝试初始化PKI
+        echo "初始化PKI并生成证书..."
+        easyrsa init-pki
+        easyrsa build-ca nopass
+        easyrsa build-client-full "$client_name" nopass
+    fi
     
     # 复制证书到OpenVPN目录
     mkdir -p "$OPENVPN_PKI"
     cp "$EASYRSA_PKI/ca.crt" "$OPENVPN_PKI/"
-    cp "$EASYRSA_PKI/issued/$CLIENT_NAME.crt" "$OPENVPN_PKI/"
-    cp "$EASYRSA_PKI/private/$CLIENT_NAME.key" "$OPENVPN_PKI/"
-fi
+    cp "$EASYRSA_PKI/issued/$client_name.crt" "$OPENVPN_PKI/"
+    cp "$EASYRSA_PKI/private/$client_name.key" "$OPENVPN_PKI/"
+    
+    echo "客户端证书生成完成: $client_name"
+}
 
-# 生成.ovpn配置文件
-cat > "$OUTPUT_FILE" <<EOF
+# 提取纯PEM格式证书（关键修复）
+extract_pem_cert() {
+    local cert_file="$1"
+    
+    if [ ! -f "$cert_file" ]; then
+        echo "# 证书文件不存在"
+        return 1
+    fi
+    
+    # 提取BEGIN CERTIFICATE到END CERTIFICATE之间的内容
+    # 使用sed提取纯PEM格式
+    sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' "$cert_file"
+}
+
+# 提取纯PEM格式密钥
+extract_pem_key() {
+    local key_file="$1"
+    
+    if [ ! -f "$key_file" ]; then
+        echo "# 密钥文件不存在"
+        return 1
+    fi
+    
+    # 提取BEGIN PRIVATE KEY到END PRIVATE KEY之间的内容
+    sed -n '/-----BEGIN.*PRIVATE KEY-----/,/-----END.*PRIVATE KEY-----/p' "$key_file"
+}
+
+# 生成.ovpn配置文件（修复后）
+generate_ovpn_config() {
+    local client_name="$1"
+    local output_file="$2"
+    
+    echo "正在生成配置文件: $output_file"
+    
+    # 创建配置文件
+    cat > "$output_file" <<EOF
 ##############################################
 # OpenVPN 客户端配置文件
 # 生成时间: $(date)
@@ -2506,41 +2900,92 @@ persist-key
 persist-tun
 verb 3
 
+# 加密设置
+cipher AES-256-GCM
+auth SHA256
+
+# TLS设置
+remote-cert-tls server
+key-direction 1
+
 EOF
 
-# 添加CA证书
-echo "<ca>" >> "$OUTPUT_FILE"
-if [ -f "$OPENVPN_PKI/ca.crt" ]; then
-    cat "$OPENVPN_PKI/ca.crt" >> "$OUTPUT_FILE"
-else
-    cat "$EASYRSA_PKI/ca.crt" >> "$OUTPUT_FILE"
-fi
-echo "</ca>" >> "$OUTPUT_FILE"
+    # 添加CA证书 - 使用纯PEM格式
+    echo "<ca>" >> "$output_file"
+    if [ -f "$OPENVPN_PKI/ca.crt" ]; then
+        extract_pem_cert "$OPENVPN_PKI/ca.crt" >> "$output_file"
+    elif [ -f "$EASYRSA_PKI/ca.crt" ]; then
+        extract_pem_cert "$EASYRSA_PKI/ca.crt" >> "$output_file"
+    else
+        echo "# CA证书不存在" >> "$output_file"
+    fi
+    echo "</ca>" >> "$output_file"
 
-# 添加客户端证书
-echo "<cert>" >> "$OUTPUT_FILE"
-if [ -f "$OPENVPN_PKI/$CLIENT_NAME.crt" ]; then
-    cat "$OPENVPN_PKI/$CLIENT_NAME.crt" >> "$OUTPUT_FILE"
-else
-    cat "$EASYRSA_PKI/issued/$CLIENT_NAME.crt" >> "$OUTPUT_FILE"
-fi
-echo "</cert>" >> "$OUTPUT_FILE"
+    # 添加客户端证书 - 使用纯PEM格式（关键修复）
+    echo "<cert>" >> "$output_file"
+    if [ -f "$OPENVPN_PKI/$client_name.crt" ]; then
+        extract_pem_cert "$OPENVPN_PKI/$client_name.crt" >> "$output_file"
+    elif [ -f "$EASYRSA_PKI/issued/$client_name.crt" ]; then
+        extract_pem_cert "$EASYRSA_PKI/issued/$client_name.crt" >> "$output_file"
+    else
+        echo "# 客户端证书不存在" >> "$output_file"
+    fi
+    echo "</cert>" >> "$output_file"
 
-# 添加客户端密钥
-echo "<key>" >> "$OUTPUT_FILE"
-if [ -f "$OPENVPN_PKI/$CLIENT_NAME.key" ]; then
-    cat "$OPENVPN_PKI/$CLIENT_NAME.key" >> "$OUTPUT_FILE"
-else
-    cat "$EASYRSA_PKI/private/$CLIENT_NAME.key" >> "$OUTPUT_FILE"
-fi
-echo "</key>" >> "$OUTPUT_FILE"
+    # 添加客户端密钥 - 使用纯PEM格式
+    echo "<key>" >> "$output_file"
+    if [ -f "$OPENVPN_PKI/$client_name.key" ]; then
+        extract_pem_key "$OPENVPN_PKI/$client_name.key" >> "$output_file"
+    elif [ -f "$EASYRSA_PKI/private/$client_name.key" ]; then
+        extract_pem_key "$EASYRSA_PKI/private/$client_name.key" >> "$output_file"
+    else
+        echo "# 客户端密钥不存在" >> "$output_file"
+    fi
+    echo "</key>" >> "$output_file"
 
-# 添加附加配置
-if [ -f "/etc/openvpn-addon.conf" ]; then
-    cat "/etc/openvpn-addon.conf" >> "$OUTPUT_FILE"
-fi
+    # 添加附加配置（如果存在）
+    if [ -f "/etc/openvpn-addon.conf" ]; then
+        cat "/etc/openvpn-addon.conf" >> "$output_file"
+    fi
+    
+    echo "配置文件生成完成: $output_file"
+}
 
-echo "配置文件生成完成: $OUTPUT_FILE"
+# 主执行流程
+main() {
+    echo "开始生成OpenVPN客户端配置"
+    echo "客户端名称: $CLIENT_NAME"
+    echo "输出文件: $OUTPUT_FILE"
+    echo "服务器地址: $DDNS:$PORT ($PROTO)"
+    echo "使用实例: $OPENVPN_INSTANCE"
+    echo "EasyRSA目录: $EASYRSA_DIR"
+    echo "PKI目录: $EASYRSA_PKI"
+    
+    # 检查证书是否存在
+    if ! check_client_cert "$CLIENT_NAME"; then
+        echo "证书不存在，开始生成..."
+        if ! generate_client_cert "$CLIENT_NAME"; then
+            echo "错误: 证书生成失败"
+            exit 1
+        fi
+    fi
+    
+    # 生成.ovpn配置文件
+    generate_ovpn_config "$CLIENT_NAME" "$OUTPUT_FILE"
+    
+    # 验证文件是否生成成功
+    if [ -f "$OUTPUT_FILE" ]; then
+        echo "生成成功！"
+        echo "文件位置: $OUTPUT_FILE"
+        echo "文件大小: $(du -h "$OUTPUT_FILE" | cut -f1)"
+    else
+        echo "错误: 文件生成失败"
+        exit 1
+    fi
+}
+
+# 执行主函数
+main
 ]]
         
         local script_fd = io.open(script_path, "w")
