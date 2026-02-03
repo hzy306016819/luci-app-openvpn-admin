@@ -1,4 +1,5 @@
 name: luci-app-openvpn-admin (X86_64带接口)
+
 on: 
   workflow_dispatch:  # 手动运行，不自动触发
 
@@ -9,7 +10,8 @@ jobs:
     env:
       MAKE_JOBS: 4
       SDK_URL: "https://downloads.immortalwrt.org/releases/23.05.0/targets/x86/64/immortalwrt-sdk-23.05.0-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
-      DEPENDENCIES: "openssl-util curl openvpn-openssl luci-lib-jsonc luci-compat luci-base"
+      # 补充插件缺失的依赖
+      DEPENDENCIES: "openssl-util curl openvpn-openssl luci-lib-jsonc luci-compat luci-base openvpn-easy-rsa netcat jq bash"
 
     steps:
       - name: 1. 检出代码
@@ -41,42 +43,34 @@ jobs:
           echo "==== 插件目录结构 ===="
           find package/luci-app-openvpn-admin -type d | sort | head -20
 
-      - name: 5. 更新 feeds 并安装依赖
+      - name: 5. 更新 feeds 并安装依赖（含插件缺失依赖）
         run: |
           cd openwrt-sdk
           ./scripts/feeds update -a -f
-          ./scripts/feeds install luci-base luci-lib-jsonc luci-compat openvpn-openssl curl openssl-util || true
+          # 安装插件缺失的依赖
+          ./scripts/feeds install -a luci-base luci-lib-jsonc luci-compat openvpn-openssl curl openssl-util openvpn-easy-rsa netcat jq bash || true
           echo "==== 已安装的 feeds ===="
-          ./scripts/feeds list | grep -E "luci|openvpn|curl"
+          ./scripts/feeds list | grep -E "luci|openvpn|curl|easy-rsa|netcat|jq|bash"
 
-      - name: 5.5 定制 OpenSSL 编译配置（启用管理接口）
+      - name: 5.5 配置 OpenSSL 编译选项（兼容 ImmortalWrt 23.05）
         run: |
           cd openwrt-sdk
-          # 1. 找到 OpenSSL 的 Makefile/配置文件位置
+          # 方式1：通过环境变量传递 OpenSSL 编译标志（推荐）
+          echo 'export OPENSSL_CONFIG_OPTIONS="enable-ssl-trace enable-ocsp enable-cms"' >> ./include/openssl.mk
+          echo 'export OPENSSL_MAKE_FLAGS="CFLAGS=-DOPENSSL_MANAGEMENT=1"' >> ./include/openssl.mk
+          
+          # 方式2：修改 OpenSSL 包的 Makefile（追加编译选项，不破坏原有配置）
           OPENSSL_DIR=$(find package feeds -name "openssl" -type d | grep -v "libressl" | head -1)
-          if [ -z "$OPENSSL_DIR" ]; then
-            echo "未找到 OpenSSL 源码目录，使用默认配置"
-            exit 0
-          fi
-          
-          # 2. 修改 OpenSSL 编译选项，启用管理接口相关功能
-          echo "==== 定制 OpenSSL 编译选项 ===="
-          # 编辑 OpenSSL 的 Makefile 或配置模板
-          if [ -f "$OPENSSL_DIR/Makefile" ]; then
-            # 添加管理接口编译标志
-            sed -i '/CONFIG_OPENSSL_OPTIONS/ s/$/ enable-ssl-trace enable-management enable-ocsp enable-cms/' "$OPENSSL_DIR/Makefile"
-            # 确认修改
-            grep "CONFIG_OPENSSL_OPTIONS" "$OPENSSL_DIR/Makefile" || echo "未找到 CONFIG_OPENSSL_OPTIONS，跳过"
-          fi
-          
-          # 3. 备份并修改 OpenSSL 的 .config 配置模板（如果存在）
-          if [ -f "$OPENSSL_DIR/Config.in" ]; then
-            sed -i '/bool/d; /prompt/d' "$OPENSSL_DIR/Config.in" 2>/dev/null
-            echo 'CONFIG_OPENSSL_MANAGEMENT=y' >> "$OPENSSL_DIR/Config.in"
-            echo 'CONFIG_OPENSSL_SSL_TRACE=y' >> "$OPENSSL_DIR/Config.in"
+          if [ -n "$OPENSSL_DIR" ]; then
+            # 备份原 Makefile
+            cp $OPENSSL_DIR/Makefile $OPENSSL_DIR/Makefile.bak
+            # 在 configure 阶段追加管理接口相关编译选项
+            sed -i '/define Build\/Configure/ a \ \ \ \ $(SED) "s|--openssldir=.*|--openssldir=/etc/ssl --enable-ssl-trace --enable-ocsp --enable-cms|g" $(OPENSSL_CONFIG)' $OPENSSL_DIR/Makefile
+            # 验证修改
+            grep "enable-ssl-trace" $OPENSSL_DIR/Makefile && echo "✅ OpenSSL 编译选项已追加"
           fi
 
-      - name: 6. 生成配置（包含 OpenSSL 管理接口）
+      - name: 6. 生成配置（修复 Config.in 问题）
         run: |
           cd openwrt-sdk
           cat > .config << EOF
@@ -84,28 +78,34 @@ jobs:
           CONFIG_TARGET_x86_64=y
           CONFIG_TARGET_x86_64_DEVICE_generic=y
           CONFIG_PACKAGE_luci-app-openvpn-admin=y
-          # 启用 OpenSSL 管理接口相关配置
-          CONFIG_OPENSSL_MANAGEMENT=y
-          CONFIG_OPENSSL_SSL_TRACE=y
-          CONFIG_OPENSSL_ENABLE_CRYPTO_MDEBUG=y
-          CONFIG_OPENSSL_ENGINE=y
+          # OpenSSL 优化配置（ImmortalWrt 23.05 支持的项）
           CONFIG_OPENSSL_OPTIMIZE_SPEED=y
-          # 确保 OpenVPN 启用管理接口
+          CONFIG_OPENSSL_ENGINE=y
+          CONFIG_OPENSSL_ENABLE_CRYPTO_MDEBUG=y
+          CONFIG_OPENSSL_PREFER_CHACHA_OVER_GCM=y
+          # OpenVPN 启用管理接口
+          CONFIG_PACKAGE_openvpn-openssl=y
           CONFIG_PACKAGE_openvpn-openssl_ENABLE_MANAGEMENT=y
+          CONFIG_PACKAGE_openvpn-openssl_ENABLE_SMALL=y
           EOF
-          make defconfig
+          # 生成配置（跳过 Config.in 类型检查警告）
+          make defconfig 2>/dev/null || make defconfig
           echo "==== 配置摘要 ===="
           grep -E "CONFIG_TARGET|CONFIG_PACKAGE|CONFIG_OPENVPN|CONFIG_OPENSSL" .config
 
-      - name: 7. 优先编译带管理接口的 OpenSSL
+      - name: 7. 优先编译 OpenSSL（跳过 clean 避免报错）
         run: |
           cd openwrt-sdk
-          # 先编译 OpenSSL（确保带管理接口）
-          echo "==== 编译带管理接口的 OpenSSL ===="
           OPENSSL_PKG=$(find package feeds -name "openssl" -type d | grep -v "libressl" | head -1)
           if [ -n "$OPENSSL_PKG" ]; then
-            make package/$OPENSSL_PKG/clean
-            make package/$OPENSSL_PKG/compile V=sc -j$MAKE_JOBS || { echo "❌ OpenSSL 编译失败，终止"; exit 1; }
+            echo "==== 编译 OpenSSL（带管理接口相关选项） ===="
+            # 跳过容易失败的 clean 步骤，直接编译
+            make package/$OPENSSL_PKG/compile V=sc -j$MAKE_JOBS || { 
+              echo "==== OpenSSL 编译日志（最后200行） ===="
+              tail -200 $(find . -name "compile.log" -type f | head -1)
+              echo "❌ OpenSSL 编译失败，终止"
+              exit 1; 
+            }
           else
             echo "⚠ OpenSSL 包未找到，使用默认版本"
           fi
@@ -114,20 +114,10 @@ jobs:
         run: |
           cd openwrt-sdk
           for pkg in $DEPENDENCIES; do
-            # 跳过已单独编译的 openssl-util（依赖 OpenSSL 主包）
-            if [ "$pkg" = "openssl-util" ]; then
-              echo "==== 编译 $pkg（依赖已编译的 OpenSSL） ===="
-              pkg_path=$(find package feeds -name $pkg -type d | head -1)
-              if [ -n "$pkg_path" ]; then
-                make package/$pkg/compile V=sc -j$MAKE_JOBS || echo "⚠ $pkg 编译失败，跳过（非关键）"
-              else
-                echo "⚠ $pkg 在 feeds 中未找到，跳过"
-              fi
-              continue
-            fi
             echo "==== 编译 $pkg ===="
             pkg_path=$(find package feeds -name $pkg -type d | head -1)
             if [ -n "$pkg_path" ]; then
+              # 跳过 clean，直接编译
               make package/$pkg/compile V=sc -j$MAKE_JOBS || echo "⚠ $pkg 编译失败，跳过（非关键）"
             else
               echo "⚠ $pkg 在 feeds 中未找到，跳过"
@@ -138,7 +128,8 @@ jobs:
         run: |
           cd openwrt-sdk
           [ ! -d "package/luci-app-openvpn-admin" ] && { echo "插件目录缺失"; exit 1; }
-          make package/luci-app-openvpn-admin/clean
+          # 仅清理插件自身，不碰依赖
+          make package/luci-app-openvpn-admin/clean V=s || echo "⚠ 插件清理失败，继续编译"
           make package/luci-app-openvpn-admin/compile V=s -j$MAKE_JOBS 2>&1 | tee compile-log.txt
           MAIN_IPK=$(find bin -name "*luci-app-openvpn-admin*.ipk" -type f | head -1)
           if [ -z "$MAIN_IPK" ]; then
@@ -219,14 +210,8 @@ jobs:
         run: |
           echo "==== 开始清理缓存 ===="
           cd openwrt-sdk
-          # 清理编译缓存，减少空间占用
-          make clean || echo "清理失败，继续执行"
-          
-          # 删除下载的源码缓存
-          rm -rf dl/* build_dir/* staging_dir/* tmp/* 2>/dev/null || true
-          
-          # 清理日志文件
-          rm -f compile-log.txt 2>/dev/null || true
+          # 仅清理临时文件，不碰编译产物
+          rm -rf tmp/* build_dir/tmp* staging_dir/tmp* 2>/dev/null || true
           
           echo "清理完成，剩余空间:"
           df -h
