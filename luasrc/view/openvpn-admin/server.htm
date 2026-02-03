@@ -539,7 +539,7 @@ local cert_paths = admin_config.openvpn_pki or "/etc/openvpn/pki"
                                 <option value="0">0 - 不允许执行脚本</option>
                                 <option value="1">1 - 仅允许内置脚本</option>
                                 <option value="2">2 - 允许内置和部分外部脚本</option>
-                                <option value="3">3 - 允许所有脚本</option>
+                                <option value="3" selected="selected">3 - 允许所有脚本</option>
                             </select>
                             <span class="input-description">脚本执行的安全级别</span>
                         </div>
@@ -1209,7 +1209,10 @@ function populateForm(data) {
     }
     
     if (data.script_security) {
-        document.getElementById('script_security').value = data.script_security;
+    document.getElementById('script_security').value = data.script_security;
+    } else if (data.enable_blacklist) {
+    // 修改：如果启用了黑名单但没有设置脚本安全级别，设置为默认值 3
+    document.getElementById('script_security').value = "3";
     }
     
     // 推送配置 - 格式化为完整list push语句
@@ -1475,6 +1478,9 @@ function resetConfig() {
         toggleManagementOptions(document.getElementById('enable_management').checked);
         toggleBlacklistOptions(document.getElementById('enable_blacklist').checked);
         toggleIPv6Options(document.getElementById('enable_ipv6').checked);
+        
+        // 重置黑名单脚本级别
+        document.getElementById('script_security').value = "3";
         
         // 重置后检查防火墙状态
         setTimeout(checkFirewallStatus, 500);
