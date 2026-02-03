@@ -81,6 +81,8 @@ luci-app-openvpn-admin/
 │   │       ├── clean-garbage.sh
 │   │       ├── client-connect-cn.sh
 │   │       ├── generate-client.sh
+│   │       ├── openvpn_ipv6 
+│   │       ├── openvpn_hotplug.sh                  
 │   │       └── renewcert.sh
 │   │        
 │   │           
@@ -102,3 +104,56 @@ luci-app-openvpn-admin/
 "/etc/openvpn/renewcert.sh"                                       证书重置脚本。这个不需要执行权限
 "/etc/openvpn/clean-garbage.sh"                               OpenVPN管理界面垃圾文件清理脚本
 "/etc/openvpn/openvpn_ipv6"                                 新增ipv6更新脚本，获取pppoe-wan的地址更新openvpn配置文件的ipv6地址。
+
+
+
+## 完整修正后的项目关系树
+
+text
+
+```
+luci-app-openvpn-admin/
+├── 控制器文件 (Lua)
+│   └── openvpn-admin.lua                    # 主控制器
+├── 视图模板 (HTM)
+│   ├── status.htm                          # 状态页面
+│   ├── client.htm                          # 客户端页面
+│   ├── server.htm                          # 服务端配置页面
+│   ├── logs.htm                            # 日志页面
+│   └── settings.htm                        # 设置页面
+├── 脚本文件 (需要手动创建)
+│   ├── /etc/openvpn/client-connect-cn.sh   # 客户端连接黑名单检查脚本 ★
+│   └── /etc/openvpn/renewcert.sh           # 重置所有证书脚本 ★
+├── 脚本文件 (自动生成)
+│   ├── openvpn_ipv6                        # IPv6自动更新主脚本
+│   ├── openvpn_hotplug.sh                  # Hotplug系统脚本
+│   ├── clean-garbage.sh                    # 垃圾清理脚本
+│   └── generate-client.sh                  # 生成客户端配置脚本
+├── 配置文件
+│   ├── /etc/config/openvpn-admin           # 插件UCI配置
+│   ├── /etc/config/openvpn                 # OpenVPN主配置
+│   ├── /etc/openvpn/blacklist.json         # 黑名单文件
+│   ├── /etc/openvpn/openvpn_connection_history.json # 连接历史
+│   └── /etc/openvpn/pki/                   # 证书目录
+├── 系统集成文件
+│   ├── /etc/hotplug.d/iface/99-openvpn-admin # Hotplug配置文件（自动生成）
+│   └── /etc/crontabs/root                  # Cron定时任务（自动更新）
+└── 临时文件目录
+    ├── /tmp/openvpn-admin/                 # 临时目录（自动创建）
+    ├── /tmp/openvpn-admin/openvpn_ipv6.log # IPv6脚本日志
+    └── /tmp/openvpn-admin/hotplug_ipv6.log # Hotplug日志
+```
+
+
+
+## 脚本创建状态检查表
+
+| 脚本文件             | 是否自动生成 | 状态                   | 备注             |
+| :------------------- | :----------- | :--------------------- | :--------------- |
+| openvpn_ipv6         | 手动/自动    | ⚠️ 需要手动创建或替换   | 核心IPv6更新脚本 |
+| openvpn_hotplug.sh   | 自动生成     | ✅ 保存设置时生成       | Hotplug系统脚本  |
+| clean-garbage.sh     | 自动生成     | ✅ 启用清理功能时生成   | 垃圾清理脚本     |
+| generate-client.sh   | 自动生成     | ✅ 首次生成客户端时生成 | 客户端配置生成   |
+| client-connect-cn.sh | 手动创建     | ⚠️ 需要手动创建         | 黑名单检查脚本   |
+| renewcert.sh         | 手动创建     | ⚠️ 需要手动创建         | 证书重置脚本     |
+| 99-openvpn-admin     | 自动生成     | ✅ 启用Hotplug时生成    | Hotplug配置文件  |
