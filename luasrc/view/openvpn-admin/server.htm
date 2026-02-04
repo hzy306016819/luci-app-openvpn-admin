@@ -1491,6 +1491,9 @@ function resetConfig() {
         // 设置持久化选项默认值
         document.getElementById('persist_key').checked = true;
         document.getElementById('persist_tun').checked = true;
+
+        // 设置日志级别默认值（模板使用3 - 标准）
+        document.getElementById('verb').value = "3";
         
         alert('配置已重置为默认值，请点击"保存配置"应用更改。');
     }
