@@ -18,7 +18,6 @@
 - **日志查看**：实时查看 OpenVPN 日志，支持自动刷新和过滤
 - **黑名单管理**：基于客户端 CN 的黑名单系统
 - **证书管理**：支持重置所有证书
-- **ipv6管理**：支持ipv6
 
 ### 🔧 技术特性
 - 基于 OpenVPN Management Interface 实时获取连接状态
@@ -158,3 +157,78 @@ luci-app-openvpn-admin/
 | client-connect-cn.sh | 手动创建     | ⚠️ 需要手动创建         | 黑名单检查脚本   |
 | renewcert.sh         | 手动创建     | ⚠️ 需要手动创建         | 证书重置脚本     |
 | 99-openvpn-admin     | 自动生成     | ✅ 启用Hotplug时生成    | Hotplug配置文件  |
+
+## 一、/etc/config/openvpn-admin 解析
+
+这个文件是 **OpenVPN-Admin 管理工具** 的全局配置文件，用于管理 OpenVPN 的运行、日志、黑名单、脚本执行等辅助功能，而非 OpenVPN 服务本身的核心配置。
+
+|                            配置项                            |                           具体作用                           |
+| :----------------------------------------------------------: | :----------------------------------------------------------: |
+|                  `config settings 'global'`                  | 定义 OpenVPN-Admin 的全局配置块（OpenWRT 配置文件的标准格式） |
+|              `option openvpn_instance 'myvpn'`               | 指定要管理的 OpenVPN 实例名称（对应`/etc/config/openvpn`中的`myvpn`实例） |
+|      `option openvpn_config_path '/etc/config/openvpn'`      |                指向 OpenVPN 主配置文件的路径                 |
+|                  `option history_size '20'`                  |        限制连接历史记录的最大条数（仅保留最近 20 条）        |
+|              `option blacklist_duration '300'`               |         黑名单生效时长（单位：秒），300 秒 = 5 分钟          |
+|             `option log_file '/tmp/openvpn.log'`             | OpenVPN 日志文件的存储路径（`/tmp`是临时目录，设备重启后日志丢失） |
+|             `option easyrsa_dir '/etc/easy-rsa'`             | EasyRSA 工具的安装目录（EasyRSA 用于生成 OpenVPN 所需的证书 / 密钥） |
+|           `option easyrsa_pki '/etc/easy-rsa/pki'`           | EasyRSA 的 PKI（公钥基础设施）目录，存放根证书、密钥等基础证书文件 |
+|           `option openvpn_pki '/etc/openvpn/pki'`            | OpenVPN 实际使用的 PKI 目录（指向服务端 / 客户端证书的存储位置） |
+|             `option logs_refresh_interval '10'`              |          管理界面日志自动刷新的时间间隔（单位：秒）          |
+|              `option logs_display_lines '1000'`              |      管理界面最多显示的日志行数（避免日志过多导致卡顿）      |
+|              `option logs_refresh_enabled '1'`               |            启用日志自动刷新（1 = 启用，0 = 禁用）            |
+|            `option temp_dir '/tmp/openvpn-admin'`            |               OpenVPN-Admin 临时文件的存储目录               |
+|              `option clean_garbage_time '4:50'`              |      定时清理垃圾文件的时间（每天凌晨 4 点 50 分执行）       |
+|                `option refresh_interval '1'`                 |   管理界面数据（如在线客户端、流量）的刷新间隔（单位：秒）   |
+| `option history_file '/etc/openvpn/openvpn_connection_history.json'` |          连接历史记录的持久化文件路径（JSON 格式）           |
+|    `option blacklist_file '/etc/openvpn/blacklist.json'`     |           黑名单文件路径（记录被禁止连接的客户端）           |
+| `option generate_client_script '/etc/openvpn/generate-client.sh'` |   生成客户端配置文件的脚本路径（一键生成客户端.ovpn 文件）   |
+|    `option renew_cert_script '/etc/openvpn/renewcert.sh'`    |         证书续期脚本路径（避免证书过期导致连接失败）         |
+| `option clean_garbage_script '/etc/openvpn/clean-garbage.sh'` |        清理垃圾文件（如过期日志、临时文件）的脚本路径        |
+|    `option ipv6_script_path '/etc/openvpn/openvpn_ipv6'`     |    处理 IPv6 相关逻辑的脚本路径（如 IPv6 地址配置、路由）    |
+|              `option ipv6_script_interval '10'`              |               IPv6 脚本的执行间隔（单位：秒）                |
+|                `option blacklist_enabled '0'`                |             禁用黑名单功能（1 = 启用，0 = 禁用）             |
+|              `option clean_garbage_enabled '0'`              |                   禁用自动清理垃圾文件功能                   |
+|                 `option refresh_enabled '1'`                 |                   启用管理界面数据自动刷新                   |
+|               `option ipv6_script_enabled '1'`               |                      启用 IPv6 相关脚本                      |
+|                 `option hotplug_enabled '1'`                 |         启用热插拔触发功能（网络接口变化时执行脚本）         |
+|             `option hotplug_interface 'br-lan'`              | 监控的热插拔接口（LAN 桥接接口，如路由器 LAN 口变化时触发）  |
+| `option hotplug_ipv6_address '240e:3b1:1690:86a0:be24:11ff:feba:9e5a'` |                 热插拔触发时使用的 IPv6 地址                 |
+| `option hotplug_script_path '/etc/openvpn/openvpn_hotplug.sh'` |  热插拔事件触发时执行的脚本路径（如接口变化后重启 OpenVPN）  |
+
+------
+
+## 二、/etc/config/openvpn 解析
+
+这个文件是 **OpenVPN 服务端的核心配置**，定义了`myvpn`实例的运行规则（协议、端口、证书、路由、客户端策略等），是 OpenVPN 服务能正常运行的关键。
+
+|                           配置项                            |                           具体作用                           |
+| :---------------------------------------------------------: | :----------------------------------------------------------: |
+|                  `config openvpn 'myvpn'`                   | 定义一个名为`myvpn`的 OpenVPN 实例（OpenWRT 中可配置多个实例） |
+|                    `option proto 'udp6'`                    | 服务端使用的传输协议：`udp6`表示基于 IPv6 的 UDP 协议（UDP 比 TCP 更适合 VPN，延迟更低） |
+|                     `option dev 'tun'`                      | 使用`tun`虚拟设备（三层 IP 隧道，用于路由转发）；若用`tap`则是二层以太网隧道 |
+|                 `option topology 'subnet'`                  | 子网拓扑模式：给所有客户端分配同一子网（10.8.0.0/24）的 IP，便于路由管理 |
+|          `option server '10.8.0.0 255.255.255.0'`           | 定义 OpenVPN 虚拟子网：服务端占用 10.8.0.1，客户端分配 10.8.0.2~10.8.0.254 |
+|                 `option compress 'lz4-v2'`                  | 服务端启用`lz4-v2`压缩算法（轻量级高压缩比，提升 VPN 传输效率） |
+|            `option ca '/etc/openvpn/pki/ca.crt'`            |  CA 根证书路径（用于验证客户端证书的合法性，核心安全配置）   |
+|            `option dh '/etc/openvpn/pki/dh.pem'`            | Diffie-Hellman 参数文件（用于密钥交换，保证加密通信的安全性） |
+|         `option cert '/etc/openvpn/pki/server.crt'`         |         服务端证书路径（客户端验证服务端身份的依据）         |
+|         `option key '/etc/openvpn/pki/server.key'`          |          服务端私钥路径（服务端加密通信的核心密钥）          |
+|                  `option persist_key '1'`                   | 重启 TUN/TAP 设备时不重新读取私钥（提升稳定性，避免密钥重复加载） |
+|                  `option persist_tun '1'`                   |  重启时保持 TUN/TAP 设备打开（避免隧道重新建立，减少断连）   |
+|                   `option user 'nobody'`                    |  OpenVPN 进程运行的用户（非 root 用户，降低权限提升安全性）  |
+|                  `option group 'nogroup'`                   | OpenVPN 进程运行的用户组（配合`nobody`用户，进一步限制权限） |
+|                  `option max_clients '10'`                  |   最大允许同时连接的客户端数量（限制并发数，避免资源耗尽）   |
+|                 `option keepalive '10 120'`                 | 保活机制：每 10 秒发一次心跳包，120 秒未收到客户端回应则断开连接 |
+|                      `option verb '3'`                      | 日志详细程度（0-9，3 为中等，数字越大日志越详细，调试时可调高） |
+|        `option status '/var/log/openvpn_status.log'`        |   状态日志路径（记录客户端连接状态、IP 分配、流量等信息）    |
+|               `option log '/tmp/openvpn.log'`               | 主日志路径（临时目录，重启后丢失，可配合 openvpn-admin 的日志配置） |
+|                    `option enabled '1'`                     | 启用该 OpenVPN 实例（1 = 启用，0 = 禁用，改 0 后服务不启动） |
+|                `option script_security '3'`                 | 脚本安全级别（3 为最高级，允许执行任意外部脚本，如 client-connect 脚本） |
+|                    `option port '1010'`                     |           服务端监听的端口号（客户端需连接此端口）           |
+|                `option ddns '234.85020.xyz'`                |   DDNS 域名（客户端可通过域名访问服务端，无需记住固定 IP）   |
+|   `option local '240e:3b1:1697:e780:be24:11ff:feba:9e5a'`   | 服务端绑定的本地 IPv6 地址（仅监听该地址，确保 VPN 走 IPv6） |
+| `option client_connect '/etc/openvpn/client-connect-cn.sh'` |  客户端成功连接时执行的脚本（如记录连接日志、分配特定权限）  |
+|       `list push 'route 192.168.100.0 255.255.255.0'`       | 推送给客户端的路由规则：让客户端能访问 192.168.100.0/24 局域网 |
+|       `list push 'redirect-gateway def1 bypass-dhcp'`       |      强制客户端所有流量走 VPN（默认网关重定向到服务端）      |
+|        `list push 'dhcp-option DNS 192.168.100.10'`         |      推送给客户端的 DNS 服务器：客户端用此 DNS 解析域名      |
+|                `list push 'compress lz4-v2'`                |         告知客户端启用`lz4-v2`压缩（需和服务端一致）         |
