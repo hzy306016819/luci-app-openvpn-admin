@@ -263,7 +263,7 @@ local cert_paths = admin_config.openvpn_pki or "/etc/openvpn/pki"
                                 <option value="">无压缩</option>
                                 <option value="lzo">LZO</option>
                                 <option value="lz4">LZ4</option>
-                                <option value="lz4-v2">LZ4-v2</option>
+                                <option value="lz4-v2" selected="selected">LZ4-v2</option>
                                 <option value="compress">compress</option>
                             </select>
                             <span class="input-description">数据压缩算法</span>
@@ -277,7 +277,7 @@ local cert_paths = admin_config.openvpn_pki or "/etc/openvpn/pki"
                     <div class="cbi-value-field">
                         <div class="cbi-input-checkbox">
                             <input type="checkbox" class="cbi-input-checkbox" id="persist_key" 
-                                   name="persist_key" value="1" />
+                                   name="persist_key" value="1" checked="checked />
                             <label for="persist_key"></label>
                             <span class="input-description">重启后保持密钥状态</span>
                         </div>
@@ -290,7 +290,7 @@ local cert_paths = admin_config.openvpn_pki or "/etc/openvpn/pki"
                     <div class="cbi-value-field">
                         <div class="cbi-input-checkbox">
                             <input type="checkbox" class="cbi-input-checkbox" id="persist_tun" 
-                                   name="persist_tun" value="1" />
+                                   name="persist_tun" value="1" checked="checked />
                             <label for="persist_tun"></label>
                             <span class="input-description">重启后保持隧道状态</span>
                         </div>
@@ -1484,6 +1484,13 @@ function resetConfig() {
         
         // 重置后检查防火墙状态
         setTimeout(checkFirewallStatus, 500);
+        
+        // 设置压缩算法默认值
+        document.getElementById('compress').value = "lz4-v2";
+        
+        // 设置持久化选项默认值
+        document.getElementById('persist_key').checked = true;
+        document.getElementById('persist_tun').checked = true;
         
         alert('配置已重置为默认值，请点击"保存配置"应用更改。');
     }

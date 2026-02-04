@@ -46,7 +46,7 @@ function get_admin_config()
         
         -- 配置项
         temp_dir = "/tmp/openvpn-admin",
-        clean_garbage_enabled = true,
+        clean_garbage_enabled = false,
         clean_garbage_time = "4:50",
         clean_garbage_script = "/etc/openvpn/clean-garbage.sh",
         
@@ -136,6 +136,7 @@ end
 function get_blacklist_config()
     local config = get_admin_config()
     return {
+        enabled = config.blacklist_enabled,
         duration = config.blacklist_duration,
         file = config.blacklist_file
     }
@@ -1101,11 +1102,11 @@ function save_admin_config()
         "refresh_enabled",
         "refresh_interval",
         "history_size",
+        "blacklist_enabled",
         "blacklist_duration",
         "blacklist_file",
         "log_file",
         "history_file",
-        "blacklist_file",
         "easyrsa_dir",
         "easyrsa_pki",
         "openvpn_pki",
@@ -2376,6 +2377,12 @@ function get_blacklist_cn()
     
     local blacklist_config = get_blacklist_config()
     
+    if not blacklist_config.enabled then
+        result.message = "黑名单功能已禁用"
+        http.write_json(result)
+        return
+    end
+    
     local blacklist = get_client_blacklist_cn()
     
     result.data = blacklist
@@ -2440,7 +2447,13 @@ function add_client_to_blacklist()
     }
     
     local blacklist_config = get_blacklist_config()
-        
+    
+    if not blacklist_config.enabled then
+        result.message = "黑名单功能已禁用"
+        http.write_json(result)
+        return
+    end
+    
     local cn = http.formvalue("cn")
     local duration = http.formvalue("duration")
     
@@ -3532,45 +3545,45 @@ function save_openvpn_uci_config()
         end
     end
     
-    -- 处理黑名单
-    local enable_blacklist = http.formvalue("enable_blacklist")
-    if enable_blacklist and enable_blacklist == "1" then
-        local client_connect = http.formvalue("client_connect") or "/etc/openvpn/client-connect-cn.sh"
-        local script_security = http.formvalue("script_security") or "3"
-        
-        local ok1, err1 = pcall(function()
-            uci:set("openvpn", instance, "client_connect", client_connect)
-        end)
-        local ok2, err2 = pcall(function()
-            uci:set("openvpn", instance, "script_security", script_security)
-        end)
-        
-        if not ok1 then
-            result.message = "设置client_connect失败: " .. tostring(err1)
-            http.write_json(result)
-            return
-        end
-        if not ok2 then
-            result.message = "设置script_security失败: " .. tostring(err2)
-            http.write_json(result)
-            return
-        end
-    else
-        -- 禁用时删除黑名单相关配置
-        local ok1, err1 = pcall(function()
-            uci:delete("openvpn", instance, "client_connect")
-        end)
-        local ok2, err2 = pcall(function()
-            uci:delete("openvpn", instance, "script_security")
-        end)
-        
-        if not ok1 then
-            -- 如果删除失败，可能该选项不存在，这不算错误
-        end
-        if not ok2 then
-            -- 如果删除失败，可能该选项不存在，这不算错误
-        end
+-- 处理黑名单
+local enable_blacklist = http.formvalue("enable_blacklist")
+if enable_blacklist and enable_blacklist == "1" then
+    local client_connect = http.formvalue("client_connect") or "/etc/openvpn/client-connect-cn.sh"
+    local script_security = http.formvalue("script_security") or "3"
+    
+    local ok1, err1 = pcall(function()
+        uci:set("openvpn", instance, "client_connect", client_connect)
+    end)
+    local ok2, err2 = pcall(function()
+        uci:set("openvpn", instance, "script_security", script_security)
+    end)
+    
+    if not ok1 then
+        result.message = "设置client_connect失败: " .. tostring(err1)
+        http.write_json(result)
+        return
     end
+    if not ok2 then
+        result.message = "设置script_security失败: " .. tostring(err2)
+        http.write_json(result)
+        return
+    end
+else
+    -- 禁用时删除黑名单相关配置
+    local ok1, err1 = pcall(function()
+        uci:delete("openvpn", instance, "client_connect")
+    end)
+    local ok2, err2 = pcall(function()
+        uci:delete("openvpn", instance, "script_security")
+    end)
+    
+    if not ok1 then
+        -- 如果删除失败，可能该选项不存在，这不算错误
+    end
+    if not ok2 then
+        -- 如果删除失败，可能该选项不存在，这不算错误
+    end
+end
     
     -- 提交更改
     local save_ok, save_err = pcall(function()

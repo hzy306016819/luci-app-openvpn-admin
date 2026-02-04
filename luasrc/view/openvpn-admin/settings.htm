@@ -82,7 +82,7 @@ local util = require "luci.util"
                 </div>
                 
                 <!-- IPv6脚本路径 -->
-                <div class="cbi-value">
+                <div class="cbi-value ipv6-script-option">
                     <label class="cbi-value-title" for="ipv6_script_path">IPv6脚本路径</label>
                     <div class="cbi-value-field">
                         <div class="form-input-with-description">
@@ -94,7 +94,7 @@ local util = require "luci.util"
                 </div>
                 
                 <!-- IPv6脚本运行间隔 -->
-                <div class="cbi-value">
+                <div class="cbi-value ipv6-script-option">
                     <label class="cbi-value-title" for="ipv6_script_interval">脚本运行间隔（分钟）</label>
                     <div class="cbi-value-field">
                         <div class="form-input-with-description">
@@ -107,7 +107,7 @@ local util = require "luci.util"
                 </div>
                 
                 <!-- 检查脚本按钮 -->
-                <div class="cbi-value">
+                <div class="cbi-value ipv6-script-option">
                     <label class="cbi-value-title">脚本状态检查</label>
                     <div class="cbi-value-field">
                         <button type="button" class="cbi-button cbi-button-action" style="margin-right: 5px;" onclick="checkIpv6Script()">
@@ -145,7 +145,7 @@ local util = require "luci.util"
                 </div>
                 
                 <!-- 接口自动检测 -->
-                <div class="cbi-value">
+                <div class="cbi-value hotplug-option">
                     <label class="cbi-value-title">接口自动检测</label>
                     <div class="cbi-value-field">
                         <button type="button" class="cbi-button cbi-button-action" style="margin-right: 0px;" onclick="autoDetectInterface()">
@@ -156,7 +156,7 @@ local util = require "luci.util"
                 </div>
                 
                 <!-- 监控接口 -->
-                <div class="cbi-value">
+                <div class="cbi-value hotplug-option">
                     <label class="cbi-value-title" for="hotplug_interface">监控接口</label>
                     <div class="cbi-value-field">
                         <div class="form-input-with-description">
@@ -179,7 +179,7 @@ local util = require "luci.util"
                 </div>
                 
                 <!-- IPv6地址显示 -->
-                <div class="cbi-value">
+                <div class="cbi-value hotplug-option">
                     <label class="cbi-value-title" for="hotplug_ipv6_address">接口IPv6地址</label>
                     <div class="cbi-value-field">
                         <div class="form-input-with-description">
@@ -196,7 +196,7 @@ local util = require "luci.util"
                 </div>
                 
                 <!-- Hotplug脚本路径 -->
-                <div class="cbi-value">
+                <div class="cbi-value hotplug-option">
                     <label class="cbi-value-title" for="hotplug_script_path">Hotplug脚本路径</label>
                     <div class="cbi-value-field">
                         <div class="form-input-with-description">
@@ -228,7 +228,7 @@ local util = require "luci.util"
                 </div>
                 
                 <!-- 刷新间隔 -->
-                <div class="cbi-value">
+                <div class="cbi-value refresh-option">
                     <label class="cbi-value-title" for="refresh_interval">自动刷新间隔（秒）</label>
                     <div class="cbi-value-field">
                         <div class="form-input-with-description">
@@ -241,7 +241,7 @@ local util = require "luci.util"
                 </div>
                 
                 <!-- 历史记录行数 -->
-                <div class="cbi-value">
+                <div class="cbi-value refresh-option">
                     <label class="cbi-value-title" for="history_size">连接历史记录行数</label>
                     <div class="cbi-value-field">
                         <div class="form-input-with-description">
@@ -274,7 +274,7 @@ local util = require "luci.util"
                 </div>
                 
                 <!-- 日志刷新间隔 -->
-                <div class="cbi-value">
+                <div class="cbi-value logs-refresh-option">
                     <label class="cbi-value-title" for="logs_refresh_interval">日志刷新间隔（秒）</label>
                     <div class="cbi-value-field">
                         <div class="form-input-with-description">
@@ -287,7 +287,7 @@ local util = require "luci.util"
                 </div>
                 
                 <!-- 日志显示行数 -->
-                <div class="cbi-value">
+                <div class="cbi-value logs-refresh-option">
                     <label class="cbi-value-title" for="logs_display_lines">日志显示行数</label>
                     <div class="cbi-value-field">
                         <div class="form-input-with-description">
@@ -302,35 +302,49 @@ local util = require "luci.util"
         </div>
         
         <!-- 黑名单设置 -->
-        <div class="cbi-section">
-            <h3><%:黑名单设置%></h3>
-            <div class="cbi-section-node">                                
-                <!-- 黑名单时长 -->
-                <div class="cbi-value">
-                    <label class="cbi-value-title" for="blacklist_duration">默认黑名单时长（秒）</label>
-                    <div class="cbi-value-field">
-                        <div class="form-input-with-description">
-                            <input type="number" class="cbi-input-text" id="blacklist_duration" 
-                                   name="blacklist_duration" min="60" max="31536000" 
-                                   value="<%=config.blacklist_duration or 300%>" />
-                            <span class="input-description">断开客户端后默认加入黑名单的时长</span>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- 黑名单文件路径 -->
-                <div class="cbi-value">
-                    <label class="cbi-value-title" for="blacklist_file">黑名单文件路径</label>
-                    <div class="cbi-value-field">
-                        <div class="form-input-with-description">
-                            <input type="text" class="cbi-input-text" id="blacklist_file" 
-                                   name="blacklist_file" value="<%=config.blacklist_file or '/etc/openvpn/blacklist.json'%>" />
-                            <span class="input-description">黑名单数据存储文件路径</span>
-                        </div>
-                    </div>
+<div class="cbi-section">
+    <h3><%:黑名单设置%></h3>
+    <div class="cbi-section-node">
+        <!-- 黑名单开关 -->
+        <div class="cbi-value">
+            <label class="cbi-value-title" for="blacklist_enabled">启用黑名单功能</label>
+            <div class="cbi-value-field">
+                <div class="cbi-input-checkbox">
+                    <input type="checkbox" class="cbi-input-checkbox" id="blacklist_enabled" 
+                           name="blacklist_enabled" value="1" <%=config.blacklist_enabled and "checked='checked'" or ""%> />
+                    <label for="blacklist_enabled"></label>
+                    <input type="hidden" name="blacklist_enabled_old" value="<%=config.blacklist_enabled and "1" or "0"%>">
+                    <span class="input-description">启用客户端黑名单功能</span>
+                </div>                        
+            </div>
+        </div>
+        
+        <!-- 黑名单时长 -->
+        <div class="cbi-value blacklist-option">
+            <label class="cbi-value-title" for="blacklist_duration">默认黑名单时长（秒）</label>
+            <div class="cbi-value-field">
+                <div class="form-input-with-description">
+                    <input type="number" class="cbi-input-text" id="blacklist_duration" 
+                           name="blacklist_duration" min="60" max="31536000" 
+                           value="<%=config.blacklist_duration or 300%>" />
+                    <span class="input-description">断开客户端后默认加入黑名单的时长</span>
                 </div>
             </div>
         </div>
+        
+        <!-- 黑名单文件路径 -->
+        <div class="cbi-value blacklist-option">
+            <label class="cbi-value-title" for="blacklist_file">黑名单文件路径</label>
+            <div class="cbi-value-field">
+                <div class="form-input-with-description">
+                    <input type="text" class="cbi-input-text" id="blacklist_file" 
+                           name="blacklist_file" value="<%=config.blacklist_file or '/etc/openvpn/blacklist.json'%>" />
+                    <span class="input-description">黑名单数据存储文件路径</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
         
         <!-- 文件路径设置 -->
         <div class="cbi-section">
@@ -447,7 +461,7 @@ local util = require "luci.util"
                 </div>
                 
                 <!-- 临时文件目录 -->
-                <div class="cbi-value">
+                <div class="cbi-value clean-garbage-option">
                     <label class="cbi-value-title" for="temp_dir">临时文件目录</label>
                     <div class="cbi-value-field">
                         <div class="form-input-with-description">
@@ -459,7 +473,7 @@ local util = require "luci.util"
                 </div>
                 
                 <!-- 清除垃圾文件时间 -->
-                <div class="cbi-value">
+                <div class="cbi-value clean-garbage-option">
                     <label class="cbi-value-title" for="clean_garbage_time">清除垃圾文件时间</label>
                     <div class="cbi-value-field">
                         <div class="form-input-with-description">
@@ -471,7 +485,7 @@ local util = require "luci.util"
                 </div>
                 
                 <!-- 清除垃圾文件脚本路径 -->
-                <div class="cbi-value">
+                <div class="cbi-value clean-garbage-option">
                     <label class="cbi-value-title" for="clean_garbage_script">清除垃圾文件脚本路径</label>
                     <div class="cbi-value-field">
                         <div class="form-input-with-description">
@@ -680,6 +694,16 @@ body.dark-mode .cbi-input-text[readonly] {
     color: #888;
 }
 
+/* 条件显示/隐藏样式 */
+.ipv6-script-option,
+.hotplug-option,
+.refresh-option,
+.logs-refresh-option,
+.blacklist-option,
+.clean-garbage-option {
+    display: none;
+}
+
 /* 响应式设计 */
 @media (max-width: 768px) {
     .form-input-with-description {
@@ -762,6 +786,68 @@ document.addEventListener('DOMContentLoaded', function() {
         }, 1200);
     }
     
+    // 新增：绑定复选框事件来控制相关区域的显示/隐藏
+    
+    // IPv6脚本启用复选框
+    var ipv6ScriptCheckbox = document.getElementById('ipv6_script_enabled');
+    if (ipv6ScriptCheckbox) {
+        ipv6ScriptCheckbox.addEventListener('change', function() {
+            toggleIpv6ScriptOptions(this.checked);
+        });
+        // 初始化状态
+        toggleIpv6ScriptOptions(ipv6ScriptCheckbox.checked);
+    }
+    
+    // Hotplug启用复选框
+    var hotplugCheckbox = document.getElementById('hotplug_enabled');
+    if (hotplugCheckbox) {
+        hotplugCheckbox.addEventListener('change', function() {
+            toggleHotplugOptions(this.checked);
+        });
+        // 初始化状态
+        toggleHotplugOptions(hotplugCheckbox.checked);
+    }
+    
+    // 自动刷新启用复选框
+    var refreshCheckbox = document.getElementById('refresh_enabled');
+    if (refreshCheckbox) {
+        refreshCheckbox.addEventListener('change', function() {
+            toggleRefreshOptions(this.checked);
+        });
+        // 初始化状态
+        toggleRefreshOptions(refreshCheckbox.checked);
+    }
+    
+    // 日志自动刷新启用复选框
+    var logsRefreshCheckbox = document.getElementById('logs_refresh_enabled');
+    if (logsRefreshCheckbox) {
+        logsRefreshCheckbox.addEventListener('change', function() {
+            toggleLogsRefreshOptions(this.checked);
+        });
+        // 初始化状态
+        toggleLogsRefreshOptions(logsRefreshCheckbox.checked);
+    }
+    
+    // 黑名单启用复选框
+    var blacklistCheckbox = document.getElementById('blacklist_enabled');
+    if (blacklistCheckbox) {
+        blacklistCheckbox.addEventListener('change', function() {
+            toggleBlacklistOptions(this.checked);
+        });
+        // 初始化状态
+        toggleBlacklistOptions(blacklistCheckbox.checked);
+    }
+    
+    // 清除垃圾文件启用复选框
+    var cleanGarbageCheckbox = document.getElementById('clean_garbage_enabled');
+    if (cleanGarbageCheckbox) {
+        cleanGarbageCheckbox.addEventListener('change', function() {
+            toggleCleanGarbageOptions(this.checked);
+        });
+        // 初始化状态
+        toggleCleanGarbageOptions(cleanGarbageCheckbox.checked);
+    }
+    
     // 绑定表单提交事件
     var form = document.querySelector('form');
     if (form) {
@@ -772,6 +858,54 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 });
+
+// 新增：显示/隐藏IPv6脚本选项
+function toggleIpv6ScriptOptions(show) {
+    var elements = document.querySelectorAll('.ipv6-script-option');
+    elements.forEach(function(el) {
+        el.style.display = show ? 'flex' : 'none';
+    });
+}
+
+// 新增：显示/隐藏Hotplug选项
+function toggleHotplugOptions(show) {
+    var elements = document.querySelectorAll('.hotplug-option');
+    elements.forEach(function(el) {
+        el.style.display = show ? 'flex' : 'none';
+    });
+}
+
+// 新增：显示/隐藏刷新选项
+function toggleRefreshOptions(show) {
+    var elements = document.querySelectorAll('.refresh-option');
+    elements.forEach(function(el) {
+        el.style.display = show ? 'flex' : 'none';
+    });
+}
+
+// 新增：显示/隐藏日志刷新选项
+function toggleLogsRefreshOptions(show) {
+    var elements = document.querySelectorAll('.logs-refresh-option');
+    elements.forEach(function(el) {
+        el.style.display = show ? 'flex' : 'none';
+    });
+}
+
+// 新增：显示/隐藏黑名单选项
+function toggleBlacklistOptions(show) {
+    var elements = document.querySelectorAll('.blacklist-option');
+    elements.forEach(function(el) {
+        el.style.display = show ? 'flex' : 'none';
+    });
+}
+
+// 新增：显示/隐藏清除垃圾文件选项
+function toggleCleanGarbageOptions(show) {
+    var elements = document.querySelectorAll('.clean-garbage-option');
+    elements.forEach(function(el) {
+        el.style.display = show ? 'flex' : 'none';
+    });
+}
 
 // 静默加载接口列表（不显示弹窗）
 function loadInterfacesSilently() {
@@ -857,7 +991,6 @@ function updateInterfaceIpv6Silently(interface) {
     });
 }
 
-// 自动检测最佳接口
 // 自动检测最佳接口（智能版）
 function autoDetectInterface() {
     var resultElement = document.getElementById('auto-detect-result');
@@ -1290,6 +1423,7 @@ function resetToDefaults() {
         document.getElementById('logs_display_lines').value = '1000';
         
         // 黑名单设置
+        document.getElementById('blacklist_enabled').checked = true;
         document.getElementById('blacklist_duration').value = '300';
         document.getElementById('blacklist_file').value = '/etc/openvpn/blacklist.json';
         
@@ -1306,7 +1440,7 @@ function resetToDefaults() {
         
         // 临时文件管理设置
         document.getElementById('temp_dir').value = '/tmp/openvpn-admin';
-        document.getElementById('clean_garbage_enabled').checked = true;
+        document.getElementById('clean_garbage_enabled').checked = false;
         document.getElementById('clean_garbage_time').value = '4:50';
         document.getElementById('clean_garbage_script').value = '/etc/openvpn/clean-garbage.sh';
         
