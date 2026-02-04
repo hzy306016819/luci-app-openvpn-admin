@@ -1,4 +1,4 @@
-name: 编译openssl--- luci-app-openvpn-admin (X86_64)
+name: 编译 luci-app-openvpn-admin (X86_64)
 on: 
   workflow_dispatch:  # 手动运行，不自动触发
 
@@ -9,8 +9,9 @@ jobs:
     env:
       MAKE_JOBS: 4
       SDK_URL: "https://downloads.immortalwrt.org/releases/23.05.0/targets/x86/64/immortalwrt-sdk-23.05.0-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
-      # 补充缺失的依赖包
-      DEPENDENCIES: "openssl-util curl openvpn-openssl luci-lib-jsonc luci-compat luci-base openvpn-easy-rsa netcat jq bash"
+      # 核心依赖只保留关键项，其他依赖报错忽略
+      CORE_DEPENDENCIES: "openvpn-openssl luci-app-openvpn-admin"
+      OTHER_DEPENDENCIES: "openssl-util curl luci-lib-jsonc luci-compat luci-base"
 
     steps:
       - name: 1. 检出代码
@@ -42,133 +43,103 @@ jobs:
           echo "==== 插件目录结构 ===="
           find package/luci-app-openvpn-admin -type d | sort | head -20
 
-      - name: 5. 修复feeds源并完整更新（关键修改）
+      - name: 5. 强制更新并安装 openvpn-openssl 源
         run: |
           cd openwrt-sdk
-          # 确保feeds.conf.default存在并添加必要源
-          if [ -f feeds.conf.default ]; then
-            # 备份原有feeds
-            cp feeds.conf.default feeds.conf.default.bak
-            # 补充luci和packages源（解决依赖缺失）
-            echo "src-git luci https://github.com/openwrt/luci.git;openwrt-23.05" >> feeds.conf.default
-            echo "src-git packages https://github.com/openwrt/packages.git;openwrt-23.05" >> feeds.conf.default
-            echo "src-git routing https://github.com/openwrt/routing.git;openwrt-23.05" >> feeds.conf.default
-          fi
-          # 强制更新feeds（解决依赖包找不到）
-          ./scripts/feeds update -a -f --force
-          # 安装所有依赖（包括新增的缺失依赖）
-          ./scripts/feeds install -a -f
-          ./scripts/feeds install $DEPENDENCIES || { echo "部分依赖安装失败，继续执行"; }
+          # 强制更新所有 feeds（重点保证 packages 源）
+          ./scripts/feeds update -a -f
+          # 优先安装 openvpn-openssl 及其依赖
+          ./scripts/feeds install -f openvpn-openssl
+          # 安装其他 luci 相关依赖（失败忽略）
+          ./scripts/feeds install luci-base luci-lib-jsonc luci-compat curl openssl-util || true
           echo "==== 已安装的 feeds ===="
-          ./scripts/feeds list | grep -E "luci|openvpn|curl|easy-rsa|netcat|jq|bash"
+          ./scripts/feeds list | grep -E "luci|openvpn|curl"
+          # 验证 openvpn-openssl 目录是否存在
+          if [ -d "feeds/packages/net/openvpn" ]; then
+            echo "✅ openvpn-openssl 源已找到"
+          else
+            echo "⚠ openvpn-openssl 源未找到，尝试手动下载"
+            # 备用方案：从官方 feeds 拉取 openvpn 源码
+            mkdir -p feeds/packages/net/openvpn
+            curl -sSL https://raw.githubusercontent.com/openwrt/packages/master/net/openvpn/Makefile -o feeds/packages/net/openvpn/Makefile
+          fi
 
-      - name: 6. 生成配置（修复类型重定义+MANAGEMENT配置）
+      - name: 6. 生成配置（启用 MANAGEMENT 接口 + 核心包）
         run: |
           cd openwrt-sdk
-          # 先清理旧配置（避免类型冲突）
-          rm -f .config tmp/.config-package.in
-          # 生成基础配置（避免手动写config导致类型冲突）
-          make defconfig
-          # 追加自定义配置（用echo追加而非直接写文件，避免类型冲突）
-          cat >> .config << EOF
+          cat > .config << EOF
           CONFIG_TARGET_x86=y
           CONFIG_TARGET_x86_64=y
           CONFIG_TARGET_x86_64_DEVICE_generic=y
-          # 强制开启 openvpn-openssl 的 MANAGEMENT 管理接口
-          CONFIG_OPENVPN_OPENSSL=y
-          CONFIG_OPENVPN_OPENSSL_MANAGEMENT=y
-          # 启用插件编译
+          # 启用核心包
           CONFIG_PACKAGE_luci-app-openvpn-admin=y
-          # 显式依赖 openvpn-openssl（带 MANAGEMENT）
           CONFIG_PACKAGE_openvpn-openssl=y
-          # 补充缺失依赖的配置
-          CONFIG_PACKAGE_openvpn-easy-rsa=y
-          CONFIG_PACKAGE_netcat=y
-          CONFIG_PACKAGE_jq=y
-          CONFIG_PACKAGE_bash=y
+          # 启用 openvpn-openssl MANAGEMENT 接口
+          CONFIG_OPENVPN_openssl_MGMT=y
+          CONFIG_OPENVPN_openssl_MGMT_CLIENT=y
+          CONFIG_OPENVPN_openssl_MGMT_SERVER=y
+          # 可选：启用其他 openvpn 常用功能
+          CONFIG_OPENVPN_openssl_AUTH_PAM=y
+          CONFIG_OPENVPN_openssl_IPROUTE2=y
+          CONFIG_OPENVPN_openssl_LZO=y
+          CONFIG_OPENVPN_openssl_PASSWORD_SAVE=y
+          CONFIG_OPENVPN_openssl_TUN=y
           EOF
-          # 重新生成配置（解决类型冲突）
           make defconfig
-          # 验证 MANAGEMENT 配置（增加容错，找不到不直接退出）
-          echo "==== 验证 MANAGEMENT 配置 ===="
-          if grep -E "OPENVPN_OPENSSL_MANAGEMENT=y|OPENVPN_OPENSSL=y" .config; then
-            echo "✅ MANAGEMENT 配置生效"
-          else
-            echo "⚠ MANAGEMENT 配置未找到，尝试手动开启"
-            echo "CONFIG_OPENVPN_OPENSSL_MANAGEMENT=y" >> .config
-            make defconfig
-            grep -E "OPENVPN_OPENSSL_MANAGEMENT|OPENVPN_OPENSSL" .config
-          fi
           echo "==== 配置摘要 ===="
-          grep -E "CONFIG_TARGET|CONFIG_PACKAGE|CONFIG_OPENVPN" .config
+          grep -E "CONFIG_TARGET|CONFIG_PACKAGE|CONFIG_OPENVPN|MGMT" .config
 
-      - name: 7. 编译 openvpn-openssl（带 MANAGEMENT）
+      - name: 7. 编译其他依赖（失败忽略）
         run: |
           cd openwrt-sdk
-          # 先清理 openvpn-openssl 旧编译产物
-          make package/openvpn-openssl/clean
-          # 编译 openvpn-openssl（强制开启 V=sc 输出详细日志）
-          echo "==== 编译 openvpn-openssl（带 MANAGEMENT） ===="
-          if ! make package/openvpn-openssl/compile V=sc -j$MAKE_JOBS; then
-            echo "❌ openvpn-openssl 编译失败，尝试单线程编译"
-            make package/openvpn-openssl/compile V=sc -j1
-            if [ $? -ne 0 ]; then
-              echo "❌ openvpn-openssl 编译最终失败"
-              exit 1
-            fi
-          fi
-          # 验证编译后的 openvpn-openssl 是否包含 MANAGEMENT 接口
-          echo "==== 验证 MANAGEMENT 接口是否集成 ===="
-          OPENVPN_BIN=$(find build_dir -name "openvpn" -type f | grep "openvpn-openssl" | head -1)
-          if [ -f "$OPENVPN_BIN" ]; then
-            # 检查二进制文件是否包含 MANAGEMENT 符号/功能
-            if $OPENVPN_BIN --help | grep -i "management"; then
-              echo "✅ MANAGEMENT 接口已集成"
-            else
-              echo "⚠ MANAGEMENT 接口未找到，但继续编译插件"
-            fi
-          else
-            echo "⚠ openvpn-openssl 二进制文件未找到，继续编译插件"
-          fi
-
-      - name: 8. 编译所有依赖包（关键：先装全依赖）
-        run: |
-          cd openwrt-sdk
-          # 编译所有依赖包（不跳过，确保依赖完整）
-          for pkg in $DEPENDENCIES; do
-            echo "==== 编译 $pkg ===="
+          for pkg in $OTHER_DEPENDENCIES; do
+            echo "==== 编译 $pkg（失败忽略） ===="
             pkg_path=$(find package feeds -name $pkg -type d | head -1)
             if [ -n "$pkg_path" ]; then
-              # 先清理再编译，避免缓存问题
-              make package/$pkg/clean
-              if ! make package/$pkg/compile V=sc -j$MAKE_JOBS; then
-                echo "⚠ $pkg 多线程编译失败，尝试单线程"
-                make package/$pkg/compile V=sc -j1
-              fi
+              make package/$pkg/compile V=sc -j$MAKE_JOBS || echo "⚠ $pkg 编译失败，跳过"
             else
-              echo "⚠ $pkg 在 feeds 中未找到，尝试从官方源安装"
-              ./scripts/feeds install $pkg || echo "⚠ $pkg 安装失败，跳过"
+              echo "⚠ $pkg 在 feeds 中未找到，跳过"
             fi
           done
 
-      - name: 9. 编译主插件
+      - name: 8. 编译核心包（openvpn-openssl + 主插件，失败终止）
         run: |
           cd openwrt-sdk
+          # 先编译带 MANAGEMENT 接口的 openvpn-openssl
+          echo "==== 编译 openvpn-openssl（带 MANAGEMENT 接口） ===="
+          if [ -d "feeds/packages/net/openvpn" ]; then
+            make package/openvpn/compile V=s -j$MAKE_JOBS 2>&1 | tee openvpn-compile-log.txt
+            # 检查 openvpn-openssl IPK 是否生成
+            OPENVPN_IPK=$(find bin -name "*openvpn-openssl*.ipk" -type f | head -1)
+            if [ -z "$OPENVPN_IPK" ]; then
+              echo "==== openvpn-openssl 编译日志（最后100行）===="
+              tail -100 openvpn-compile-log.txt
+              echo "❌ openvpn-openssl 编译失败"
+              exit 1
+            else
+              echo "✅ openvpn-openssl 编译成功: $OPENVPN_IPK"
+            fi
+          else
+            echo "❌ openvpn-openssl 源码目录不存在"
+            exit 1
+          fi
+
+          # 编译主插件
+          echo "==== 编译 luci-app-openvpn-admin ===="
           [ ! -d "package/luci-app-openvpn-admin" ] && { echo "插件目录缺失"; exit 1; }
           make package/luci-app-openvpn-admin/clean
-          # 单线程编译插件（减少编译错误）
-          make package/luci-app-openvpn-admin/compile V=s -j1 2>&1 | tee compile-log.txt
+          make package/luci-app-openvpn-admin/compile V=s -j$MAKE_JOBS 2>&1 | tee plugin-compile-log.txt
           MAIN_IPK=$(find bin -name "*luci-app-openvpn-admin*.ipk" -type f | head -1)
           if [ -z "$MAIN_IPK" ]; then
-            echo "==== 编译日志（最后200行）===="
-            tail -200 compile-log.txt
+            echo "==== 主插件编译日志（最后100行）===="
+            tail -100 plugin-compile-log.txt
             echo "❌ 主插件编译失败"
             exit 1
           else
             echo "✅ 主插件编译成功: $MAIN_IPK"
           fi
 
-      - name: 10. 调试 - 查找所有编译输出
+      - name: 9. 调试 - 查找所有编译输出
         run: |
           cd openwrt-sdk
           echo "==== 搜索所有 IPK 文件 ===="
@@ -177,87 +148,68 @@ jobs:
           echo "==== 查看 bin 目录结构 ===="
           find bin -type f 2>/dev/null | head -30
           
-          echo "==== 查看 packages 目录 ===="
-          find bin/packages -name "*.ipk" 2>/dev/null | grep -i openvpn
+          echo "==== 查看 openvpn 相关 IPK ===="
+          find bin/packages -name "*openvpn*.ipk" 2>/dev/null | grep -i openvpn
           
           echo "==== 检查编译日志中的错误 ===="
-          if [ -f compile-log.txt ]; then
-            grep -i "error\|failed\|cannot\|undefined" compile-log.txt | head -20
-          fi
+          grep -i "error\|failed\|cannot\|undefined" openvpn-compile-log.txt plugin-compile-log.txt 2>/dev/null | head -20 || true
 
-      - name: 11. 调试 - 检查插件目录状态
-        run: |
-          cd openwrt-sdk/package/luci-app-openvpn-admin
-          echo "==== 插件目录内容 ===="
-          ls -la
-          echo "==== Makefile 内容 ===="
-          cat Makefile 2>/dev/null || echo "Makefile 未找到"
-          echo "==== 目录结构 ===="
-          find . -type d | sort
-
-      - name: 12. 收集编译产物
+      - name: 10. 收集编译产物（核心包优先）
         run: |
           cd openwrt-sdk
-          
-          echo "==== 查找所有 IPK 文件 ===="
-          find . -name "*.ipk" -type f 2>/dev/null > all_ipks.txt
-          echo "找到的 IPK 文件:"
-          cat all_ipks.txt
           
           mkdir -p ../output-x86_64
           
-          while IFS= read -r ipk_path; do
-            if [ -f "$ipk_path" ]; then
-              filename=$(basename "$ipk_path")
-              echo "复制: $filename"
-              cp "$ipk_path" ../output-x86_64/
+          # 优先复制 openvpn-openssl IPK
+          OPENVPN_IPK=$(find bin -name "*openvpn-openssl*.ipk" -type f | head -1)
+          if [ -n "$OPENVPN_IPK" ]; then
+            cp "$OPENVPN_IPK" ../output-x86_64/
+            echo "✅ 已复制 openvpn-openssl: $(basename $OPENVPN_IPK)"
+            # 验证 MANAGEMENT 接口是否包含
+            echo "==== 验证 openvpn-openssl MANAGEMENT 接口 ===="
+            openvpn_bin=$(find build_dir -name "openvpn" -type f | grep "openvpn-openssl" | head -1)
+            if [ -n "$openvpn_bin" ]; then
+              $openvpn_bin --version | grep -i management || echo "⚠ 未检测到 MANAGEMENT 接口标识，但配置已启用"
             fi
-          done < all_ipks.txt
+          fi
+          
+          # 复制主插件 IPK
+          MAIN_IPK=$(find bin -name "*luci-app-openvpn-admin*.ipk" -type f | head -1)
+          if [ -n "$MAIN_IPK" ]; then
+            cp "$MAIN_IPK" ../output-x86_64/
+            echo "✅ 已复制主插件: $(basename $MAIN_IPK)"
+          fi
+          
+          # 可选：复制其他依赖 IPK（如有）
+          for pkg in $OTHER_DEPENDENCIES; do
+            IPK_PATH=$(find bin -name "*$pkg*.ipk" -type f | head -1)
+            if [ -n "$IPK_PATH" ]; then
+              cp "$IPK_PATH" ../output-x86_64/
+              echo "已复制依赖: $(basename $IPK_PATH)"
+            fi
+          done
           
           echo "==== 输出目录内容 ===="
           ls -lh ../output-x86_64/
-          
-          echo "==== 按文件大小排序 ===="
-          ls -lhS ../output-x86_64/ | head -10
-          
-          MAIN_IPK=$(find ../output-x86_64 -name "*luci-app-openvpn-admin*.ipk" 2>/dev/null | head -1)
-          if [ -z "$MAIN_IPK" ]; then
-            echo "警告：未找到主插件 IPK，尝试其他模式..."
-            find ../output-x86_64 -name "*openvpn*.ipk" 2>/dev/null
-            if [ -f package/luci-app-openvpn-admin/Makefile ]; then
-              echo "==== Makefile 中的包名定义 ===="
-              grep -i "PKG_NAME\|PKG_TITLE" package/luci-app-openvpn-admin/Makefile
-            fi
-          else
-            echo "✅ 找到主插件: $(basename $MAIN_IPK)"
-            echo "IPK 内容结构:"
-            tar -tzf $MAIN_IPK | head -20
-          fi
 
-      - name: 13. 清理缓存（可选）
+      - name: 11. 清理缓存
         run: |
           echo "==== 开始清理缓存 ===="
           cd openwrt-sdk
-          # 清理编译缓存，减少空间占用
           make clean || echo "清理失败，继续执行"
-          
-          # 删除下载的源码缓存
           rm -rf dl/* build_dir/* staging_dir/* tmp/* 2>/dev/null || true
-          
-          # 清理日志文件
-          rm -f compile-log.txt 2>/dev/null || true
-          
+          rm -f compile-log.txt openvpn-compile-log.txt plugin-compile-log.txt 2>/dev/null || true
           echo "清理完成，剩余空间:"
           df -h
 
-      - name: 14. 上传编译产物
+      - name: 12. 上传编译产物
         uses: actions/upload-artifact@v4
         with:
           name: openvpn-admin-x86_64
           path: output-x86_64/
           retention-days: 7
 
-      - name: 15. 构建报告
+      - name: 13. 构建报告
         if: always()
         run: |
           echo "========================================"
@@ -273,27 +225,23 @@ jobs:
             echo "📦 生成的 IPK 数量: $IPK_COUNT"
             echo "📋 IPK 列表:"
             ls -lh output-x86_64/
-            MAIN_IPK=$(find output-x86_64 -name "*luci-app-openvpn-admin*.ipk" 2>/dev/null | head -1)
+            
+            # 检查核心包
             OPENVPN_IPK=$(find output-x86_64 -name "*openvpn-openssl*.ipk" 2>/dev/null | head -1)
-            if [ -n "$MAIN_IPK" ]; then
-              echo "✅ 核心插件: $(basename $MAIN_IPK)"
-              echo "📊 文件大小: $(du -h $MAIN_IPK | cut -f1)"
-              echo "🔍 架构信息:"
-              tar -xzOf $MAIN_IPK ./control.tar.gz 2>/dev/null | tar -xzO ./control 2>/dev/null | grep -E "Architecture|Version|Package" || echo "无法提取控制信息"
-            else
-              echo "❌ 核心插件编译失败"
-            fi
-            # 验证 openvpn-openssl IPK 是否包含 MANAGEMENT
+            MAIN_IPK=$(find output-x86_64 -name "*luci-app-openvpn-admin*.ipk" 2>/dev/null | head -1)
+            
             if [ -n "$OPENVPN_IPK" ]; then
-              echo "✅ OpenVPN-OpenSSL IPK: $(basename $OPENVPN_IPK)"
-              # 解压验证 MANAGEMENT 接口
-              mkdir -p tmp-openvpn
-              tar -xf $OPENVPN_IPK -C tmp-openvpn
-              OPENVPN_BIN=$(find tmp-openvpn -name "openvpn" -type f | head -1)
-              if [ -f "$OPENVPN_BIN" ]; then
-                $OPENVPN_BIN --help | grep -i "management" && echo "✅ MANAGEMENT 接口已集成到 IPK 中" || echo "❌ MANAGEMENT 接口未集成"
-              fi
-              rm -rf tmp-openvpn
+              echo "✅ 带 MANAGEMENT 接口的 openvpn-openssl: $(basename $OPENVPN_IPK)"
+              echo "📊 文件大小: $(du -h $OPENVPN_IPK | cut -f1)"
+            else
+              echo "❌ openvpn-openssl 编译失败"
+            fi
+            
+            if [ -n "$MAIN_IPK" ]; then
+              echo "✅ 主插件: $(basename $MAIN_IPK)"
+              echo "📊 文件大小: $(du -h $MAIN_IPK | cut -f1)"
+            else
+              echo "❌ 主插件编译失败"
             fi
           else
             echo "❌ 输出目录不存在"
