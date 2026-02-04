@@ -9,7 +9,7 @@ LUCI_TITLE:=LuCI support for OpenVPN Admin
 LUCI_DEPENDS:=+luci-compat +openvpn-openssl +openvpn-easy-rsa +kmod-tun +netcat +jq +bash +openssl-util
 
 PKG_NAME:=luci-app-openvpn-admin
-PKG_VERSION:=3.0
+PKG_VERSION:=1.0
 PKG_RELEASE:=0
 
 include $(TOPDIR)/feeds/luci/luci.mk
