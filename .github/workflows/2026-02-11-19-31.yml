@@ -102,9 +102,12 @@ jobs:
           CONFIG_OPENVPN_openssl_ENABLE_MANAGEMENT=y
           CONFIG_OPENVPN_openssl_ENABLE_IPROUTE2=y
           CONFIG_OPENVPN_openssl_ENABLE_LZO=y
-          CONFIG_OPENVPN_openssl_ENABLE_PASSWORD_SAVE=y
           CONFIG_OPENVPN_openssl_ENABLE_TUN=y
           CONFIG_OPENVPN_openssl_ENABLE_AUTH_PAM=y
+          CONFIG_OPENVPN_openssl_ENABLE_LZ4=y
+          CONFIG_OPENVPN_openssl_ENABLE_FRAGMENT=y
+          CONFIG_OPENVPN_openssl_ENABLE_PORT_SHARE=y
+          CONFIG_OPENVPN_openssl_ENABLE_SMALL=y
           
           # OpenSSL 完整功能
           CONFIG_PACKAGE_libopenssl3=y
