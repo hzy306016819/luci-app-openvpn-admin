@@ -53,8 +53,13 @@ function get_admin_config()
         -- 新增hotplug配置
         hotplug_enabled = false,
         hotplug_interface = "",
+        hotplug_ipv6_interface = "auto",
         hotplug_ipv6_address = "",
         hotplug_script_path = "/etc/openvpn/openvpn_hotplug.sh",
+        
+        -- 新增hotplug防火墙配置
+        hotplug_firewall_enabled = false,
+        hotplug_firewall_name = "openvpn_ipv6",
         
         -- IPv6脚本配置
         ipv6_script_path = "/etc/openvpn/openvpn_ipv6",
@@ -79,8 +84,11 @@ function get_admin_config()
             -- IPv6脚本配置
             "ipv6_script_path", "ipv6_script_interval", "ipv6_script_enabled",
             -- 新增hotplug配置项
-            "hotplug_enabled", "hotplug_interface", "hotplug_ipv6_address",
-            "hotplug_script_path"
+            "hotplug_enabled", "hotplug_interface", "hotplug_ipv6_interface",  
+            "hotplug_ipv6_address", "hotplug_script_path",
+            
+            -- 新增hotplug防火墙配置项
+            "hotplug_firewall_enabled", "hotplug_firewall_name"
         }
         
         for _, key in ipairs(configs) do
@@ -88,7 +96,8 @@ function get_admin_config()
     if value then
         if key == "refresh_enabled" or key == "blacklist_enabled" or 
            key == "logs_refresh_enabled" or key == "clean_garbage_enabled" or
-           key == "ipv6_script_enabled" or key == "hotplug_enabled" then
+           key == "ipv6_script_enabled" or key == "hotplug_enabled"  or
+           key == "hotplug_firewall_enabled" then
             admin_config[key] = (value == "1")
         -- 处理数值转换
                 elseif key == "refresh_interval" or key == "history_size" or 
@@ -124,6 +133,40 @@ function get_refresh_interval()
         return config.refresh_interval
     end
     return 0  -- 禁用自动刷新
+end
+
+-- 设置OpenVPN服务状态（统一函数）
+function set_openvpn_service_state(enable)
+    local instance = get_openvpn_instance()
+    local result = {
+        success = false,
+        message = ""
+    }
+    
+    -- 1. 更新UCI配置
+    local ok, err = pcall(function()
+        uci:set("openvpn", instance, "enabled", enable and "1" or "0")
+        uci:save("openvpn")
+        uci:commit("openvpn")
+    end)
+    
+    if not ok then
+        result.message = "更新配置失败: " .. tostring(err)
+        return result
+    end
+    
+    -- 2. 执行服务操作
+    local cmd = enable and "start" or "stop"
+    local ret = sys.call("/etc/init.d/openvpn " .. cmd .. " >/dev/null 2>&1")
+    
+    if ret == 0 then
+        result.success = true
+        result.message = enable and "OpenVPN服务已启用并启动" or "OpenVPN服务已停止并禁用"
+    else
+        result.message = enable and "服务启动失败" or "服务停止失败"
+    end
+    
+    return result
 end
 
 -- 获取历史记录行数
@@ -395,139 +438,760 @@ function create_hotplug_script(config)
         sys.exec("mkdir -p " .. dir .. " 2>/dev/null")
     end
     
+    -- 获取OpenVPN实例名称
+    local openvpn_instance = config.openvpn_instance or "myvpn"
+    
     local script_content = [[
 #!/bin/sh
 
 # OpenVPN Hotplug IPv6地址更新脚本
 # 自动检测网络接口变化并更新OpenVPN的IPv6地址
+# 针对360t7设备优化版本
 
-# 配置文件
-CONFIG_FILE="/etc/config/openvpn"
-OPENVPN_SECTION="]] .. (config.openvpn_instance or "myvpn") .. [["
-MONITOR_INTERFACE="]] .. (config.hotplug_interface or "") .. [["
-LOG_DIR="]] .. (config.temp_dir or "/tmp/openvpn-admin") .. [["
-LOG_FILE="$LOG_DIR/hotplug_ipv6.log"
-MAX_LOG_LINES=50
+# 调试模式（0=关闭，1=开启）- 360t7建议关闭详细调试
+DEBUG_MODE=0  # 关闭调试模式，减少日志输出
 
-# 确保日志目录存在
-mkdir -p "$LOG_DIR" 2>/dev/null
+# 进程锁文件
+LOCK_FILE="/tmp/openvpn_hotplug.lock"
+SCRIPT_TIMEOUT=80  # 整个脚本最大执行时间（秒）
 
-# 优化的日志函数
+# 从配置文件读取设置
+CONFIG_FILE="/etc/config/openvpn-admin"
+OPENVPN_INSTANCE="myvpn"
+
+# 简化日志函数
 log_message() {
-    local message="$(date '+%Y-%m-%d %H:%M:%S') - $1"
-    local temp_file="${LOG_FILE}.tmp"
+    local level="$1"
+    local message="$2"
     
-    # 如果日志文件存在且行数超过限制，保留最新的(MAX_LOG_LINES-1)行
-    if [ -f "$LOG_FILE" ]; then
-        tail -n $((MAX_LOG_LINES - 1)) "$LOG_FILE" > "$temp_file" 2>/dev/null
+    # 在非调试模式下，只记录info、warning、error级别的日志
+    if [ "$DEBUG_MODE" -eq 0 ] && [ "$level" = "debug" ]; then
+        return
     fi
     
-    # 添加新日志
-    echo "$message" >> "$temp_file"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "$timestamp [$level] $message" >> /tmp/openvpn_hotplug.log
     
-    # 替换原日志文件
-    mv "$temp_file" "$LOG_FILE" 2>/dev/null || true
+    # 简化日志文件大小限制
+    if [ -f /tmp/openvpn_hotplug.log ] && \
+       [ $(wc -l < /tmp/openvpn_hotplug.log 2>/dev/null) -gt 500 ]; then
+        tail -250 /tmp/openvpn_hotplug.log > /tmp/openvpn_hotplug.log.tmp
+        mv /tmp/openvpn_hotplug.log.tmp /tmp/openvpn_hotplug.log
+    fi
 }
 
-# 获取指定接口的公网IPv6地址
-get_public_ipv6() {
-    local interface="$1"
+# 进程锁检查
+check_process_lock() {
+    # 检查是否已有实例在运行
+    if [ -f "$LOCK_FILE" ]; then
+        local lock_pid=$(cat "$LOCK_FILE" 2>/dev/null)
+        if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+            log_message "debug" "已有hotplug实例在运行(PID: $lock_pid)，退出当前实例"
+            exit 0
+        else
+            # 清理无效的锁文件
+            rm -f "$LOCK_FILE"
+        fi
+    fi
     
-    if [ -z "$interface" ]; then
+    # 创建锁文件
+    echo $$ > "$LOCK_FILE"
+}
+
+# 清理函数
+cleanup() {
+    # 清理锁文件
+    rm -f "$LOCK_FILE"
+    log_message "debug" "清理进程锁"
+}
+
+# 超时检查函数
+check_timeout() {
+    local start_time="$1"
+    local current_time=$(date +%s)
+    local elapsed=$((current_time - start_time))
+    
+    if [ $elapsed -ge $SCRIPT_TIMEOUT ]; then
+        log_message "error" "脚本执行超时（超过 ${SCRIPT_TIMEOUT}秒），强制退出"
+        cleanup
+        exit 1
+    fi
+}
+
+# 读取配置文件
+get_config_value() {
+    local key="$1"
+    local default="$2"
+    local value=$(uci -q get "$CONFIG_FILE.@settings[0].$key" 2>/dev/null)
+    echo "${value:-$default}"
+}
+
+# 获取IPv6地址的/64前缀（简化版）
+get_ipv6_prefix_64() {
+    local ipv6_address="$1"
+    
+    if [ -z "$ipv6_address" ]; then
         echo ""
         return 1
     fi
     
-    # 获取全局IPv6地址（非本地链路地址，以2开头的公网地址）
-    ip -6 addr show dev "$interface" 2>/dev/null | \
-        grep -E 'inet6.*global' | \
-        grep -v 'deprecated' | \
-        awk '{print $2}' | \
-        cut -d'/' -f1 | \
-        grep -E '^2[0-9a-f][0-9a-f][0-9a-f]' | \
-        head -1
-}
-
-# 获取配置的IPv6地址
-get_configured_ipv6() {
-    uci -q get openvpn.$OPENVPN_SECTION.local 2>/dev/null
-}
-
-# 检查OpenVPN是否启用了IPv6
-openvpn_has_ipv6() {
-    uci -q get openvpn.$OPENVPN_SECTION.local >/dev/null 2>&1
-    return $?
-}
-
-# 主处理函数
-process_interface_change() {
-    local action="$1"
-    local interface="$2"
+    log_message "debug" "处理IPv6地址: $ipv6_address"
     
-    log_message "接口事件: $action $interface"
+    # 方法1：简单提取前4段
+    local prefix=$(echo "$ipv6_address" | cut -d: -f1-4)
     
-    # 只处理我们监控的接口
-    if [ "$interface" != "$MONITOR_INTERFACE" ]; then
-        log_message "忽略非监控接口: $interface"
+    if [ -z "$prefix" ]; then
+        log_message "error" "无法提取IPv6前缀"
+        echo ""
+        return 1
+    fi
+    
+    # 检查格式，确保是有效的IPv6前缀
+    if echo "$prefix" | grep -q -E '^[0-9a-f]{1,4}(:[0-9a-f]{1,4}){3}$'; then
+        # 标准的/64前缀格式
+        local result="${prefix}::/64"
+        log_message "debug" "提取到IPv6前缀: $result"
+        echo "$result"
+        return 0
+    else
+        log_message "error" "无效的IPv6前缀格式: $prefix"
+        echo ""
+        return 1
+    fi
+}
+
+# 获取LAN接口的IPv6 /64前缀
+get_lan_ipv6_prefix() {
+    log_message "debug" "开始获取LAN接口的IPv6 /64前缀"
+    
+    # 尝试从br-lan接口获取全局IPv6地址
+    local lan_ipv6_raw=$(ip -6 addr show dev br-lan 2>/dev/null | \
+                    grep 'inet6.*global' | \
+                    grep -v 'deprecated' | \
+                    head -1)
+    
+    if [ -z "$lan_ipv6_raw" ]; then
+        log_message "debug" "br-lan接口没有全局IPv6地址，尝试其他接口"
+        # 尝试其他LAN相关接口
+        for iface in lan eth0; do
+            lan_ipv6_raw=$(ip -6 addr show dev "$iface" 2>/dev/null | \
+                          grep 'inet6.*global' | \
+                          grep -v 'deprecated' | \
+                          head -1)
+            if [ -n "$lan_ipv6_raw" ]; then
+                break
+            fi
+        done
+    fi
+    
+    if [ -z "$lan_ipv6_raw" ]; then
+        log_message "error" "未找到LAN接口的全局IPv6地址"
+        return 1
+    fi
+    
+    # 提取完整的IPv6地址（包含/64后缀）
+    local lan_ipv6_full=$(echo "$lan_ipv6_raw" | awk '{print $2}')
+    
+    if [ -z "$lan_ipv6_full" ]; then
+        log_message "error" "无法提取IPv6地址"
+        return 1
+    fi
+    
+    log_message "debug" "找到LAN IPv6地址: $lan_ipv6_full"
+    
+    # 检查是否为/64地址
+    if echo "$lan_ipv6_full" | grep -q '/64$'; then
+        # 已经是/64格式，直接返回
+        log_message "info" "LAN IPv6 /64前缀: $lan_ipv6_full"
+        echo "$lan_ipv6_full"
+        return 0
+    else
+        # 提取地址部分，不包括后缀
+        local lan_ipv6=$(echo "$lan_ipv6_full" | cut -d'/' -f1)
+        
+        # 验证是否为公网地址（2xxx:: 或 3xxx:: 开头）
+        if echo "$lan_ipv6" | grep -q -E '^2[0-9a-f][0-9a-f][0-9a-f]:' || \
+           echo "$lan_ipv6" | grep -q -E '^3[0-9a-f][0-9a-f][0-9a-f]:'; then
+            log_message "info" "找到公网LAN IPv6地址: $lan_ipv6"
+            
+            # 获取/64前缀
+            local prefix_64=$(get_ipv6_prefix_64 "$lan_ipv6")
+            if [ -n "$prefix_64" ]; then
+                log_message "info" "LAN IPv6 /64前缀: $prefix_64"
+                echo "$prefix_64"
+                return 0
+            else
+                log_message "error" "无法提取LAN IPv6 /64前缀"
+                return 1
+            fi
+        else
+            log_message "debug" "LAN IPv6地址不是公网地址: $lan_ipv6"
+            return 1
+        fi
+    fi
+}
+
+# 查找防火墙规则（修复版，支持匿名规则）
+find_firewall_rule() {
+    local rule_name="$1"
+    
+    log_message "debug" "查找防火墙规则: $rule_name"
+    
+    # 方法1：直接遍历所有规则（支持匿名规则）
+    uci -q show firewall | grep "=rule$" | while read rule_line; do
+        local section=$(echo "$rule_line" | cut -d. -f2)
+        
+        # 获取规则名称
+        local name=$(uci -q get firewall.$section.name 2>/dev/null)
+        
+        if [ "$name" = "$rule_name" ]; then
+            log_message "debug" "找到防火墙规则段: $section"
+            echo "$section"
+            return 0
+        fi
+    done
+    
+    # 如果没有找到，尝试另一种方法
+    # 获取所有规则配置，然后查找
+    local all_rules=$(uci -q show firewall | grep -E "\.name='" | grep "$rule_name")
+    if [ -n "$all_rules" ]; then
+        local section=$(echo "$all_rules" | head -1 | cut -d. -f2)
+        log_message "debug" "找到防火墙规则段(备用方法): $section"
+        echo "$section"
         return 0
     fi
     
-    if [ "$action" = "ifup" ] || [ "$action" = "ifupdate" ]; then
-        log_message "检测到接口 $interface 状态变化"
+    log_message "error" "未找到防火墙规则: $rule_name"
+    echo ""
+    return 1
+}
+
+# 更新防火墙规则
+update_firewall_rule() {
+    local new_prefix="$1"
+    
+    # 检查是否启用了防火墙自动更新
+    local firewall_enabled=$(get_config_value "hotplug_firewall_enabled" "0")
+    if [ "$firewall_enabled" != "1" ]; then
+        log_message "debug" "防火墙自动更新功能未启用"
+        return 0
+    fi
+    
+    # 获取防火墙规则名称
+    local firewall_name=$(get_config_value "hotplug_firewall_name" "openvpn_ipv6")
+    if [ -z "$firewall_name" ]; then
+        log_message "error" "防火墙规则名称未配置"
+        return 1
+    fi
+    
+    log_message "info" "开始更新防火墙规则: $firewall_name"
+    
+    # 查找防火墙规则
+    local rule_section=$(find_firewall_rule "$firewall_name")
+    
+    if [ -z "$rule_section" ]; then
+        log_message "error" "未找到防火墙规则: $firewall_name"
         
-        # 等待网络稳定
-        sleep 2
+        # 输出所有规则名，便于调试
+        log_message "debug" "所有防火墙规则名称:"
+        uci -q show firewall | grep "\.name='" | sed 's/^/  /' >> /tmp/openvpn_hotplug.log 2>&1
         
-        # 获取当前IPv6地址
-        current_ipv6=$(get_public_ipv6 "$interface")
+        return 1
+    fi
+    
+    log_message "info" "找到防火墙规则段: $rule_section"
+    
+    # 获取当前的dest_ip列表
+    local current_dest_ips=""
+    local needs_update=1
+    
+    # 使用uci get获取dest_ip列表
+    current_dest_ips=$(uci -q get firewall.$rule_section.dest_ip 2>/dev/null)
+    
+    if [ -z "$current_dest_ips" ]; then
+        log_message "info" "规则 $firewall_name 没有dest_ip配置"
+        needs_update=1
+    else
+        log_message "debug" "当前dest_ip列表:"
+        # 遍历dest_ip列表
+        for dest_ip in $current_dest_ips; do
+            log_message "debug" "  - $dest_ip"
+            if [ "$dest_ip" = "$new_prefix" ]; then
+                log_message "info" "防火墙规则已经包含目标前缀: $new_prefix"
+                needs_update=0
+                break
+            fi
+        done
+    fi
+    
+    # 如果需要更新
+    if [ "$needs_update" = "1" ]; then
+        log_message "info" "更新防火墙规则，设置dest_ip为: $new_prefix"
         
-        if [ -z "$current_ipv6" ]; then
-            log_message "警告: 接口 $interface 上没有可用的公网IPv6地址"
+        # 先删除所有现有的dest_ip（使用uci delete）
+        while uci -q delete firewall.$rule_section.dest_ip 2>/dev/null; do
+            log_message "debug" "删除现有dest_ip"
+        done
+        
+        # 添加新的dest_ip
+        if uci -q add_list firewall.$rule_section.dest_ip="$new_prefix" 2>&1; then
+            log_message "debug" "添加新的dest_ip: $new_prefix"
+        else
+            log_message "error" "添加dest_ip失败"
             return 1
         fi
         
-        log_message "当前IPv6地址: $current_ipv6"
-        
-        # 检查OpenVPN是否启用了IPv6
-        if openvpn_has_ipv6; then
-            configured_ipv6=$(get_configured_ipv6)
+        # 提交更改
+        if uci commit firewall 2>&1; then
+            log_message "info" "防火墙配置保存成功"
             
-            if [ -z "$configured_ipv6" ]; then
-                log_message "OpenVPN配置中无IPv6地址，设置为: $current_ipv6"
-                uci set openvpn.$OPENVPN_SECTION.local="$current_ipv6"
-                uci commit openvpn
-                /etc/init.d/openvpn restart
-                log_message "OpenVPN已重启"
-            elif [ "$current_ipv6" != "$configured_ipv6" ]; then
-                log_message "IPv6地址变更: $configured_ipv6 -> $current_ipv6"
-                uci set openvpn.$OPENVPN_SECTION.local="$current_ipv6"
-                uci commit openvpn
-                /etc/init.d/openvpn restart
-                log_message "OpenVPN已重启"
+            # 重新加载防火墙
+            if /etc/init.d/firewall reload >/dev/null 2>&1; then
+                log_message "info" "防火墙重新加载成功"
+                return 0
             else
-                log_message "IPv6地址一致，无需更新"
+                log_message "error" "防火墙重新加载失败"
+                return 1
             fi
         else
-            log_message "OpenVPN未启用IPv6，跳过地址更新"
+            log_message "error" "防火墙配置保存失败"
+            return 1
+        fi
+    else
+        log_message "info" "防火墙规则无需更新"
+        return 0
+    fi
+}
+
+# 获取公网IPv6地址（智能判断版）
+get_public_ipv6() {
+    local target_interface="$1"
+    
+    log_message "debug" "开始获取接口 $target_interface 的IPv6地址"
+    
+    # 根据目标接口获取实际的网络接口
+    local actual_interface=""
+    case "$target_interface" in
+        lan6|lan)
+            actual_interface="br-lan"
+            ;;
+        wan6)
+            actual_interface="wan"
+            ;;
+        wan)
+            actual_interface="pppoe-wan"
+            ;;
+        *)
+            actual_interface="$target_interface"
+            ;;
+    esac
+    
+    log_message "debug" "实际检查的接口: $actual_interface (原接口: $target_interface)"
+    
+    # 检查接口是否存在
+    if ! ip link show "$actual_interface" >/dev/null 2>&1; then
+        log_message "error" "接口 $actual_interface 不存在"
+        echo ""
+        return 1
+    fi
+    
+    # 判断是否是LAN接口
+    local is_lan_interface=0
+    case "$target_interface" in
+        lan|lan6|br-lan)
+            is_lan_interface=1
+            log_message "debug" "检测到LAN接口模式"
+            ;;
+        *)
+            is_lan_interface=0
+            log_message "debug" "检测到WAN接口模式"
+            ;;
+    esac
+    
+    # 获取该接口的所有IPv6地址
+    local ipv6_addresses=$(ip -6 addr show dev "$actual_interface" 2>/dev/null | \
+                          grep 'inet6.*global' | \
+                          grep -v 'deprecated' | \
+                          awk '{print $2}')
+    
+    if [ -z "$ipv6_addresses" ]; then
+        log_message "debug" "接口 $actual_interface 没有全局IPv6地址"
+        echo ""
+        return 1
+    fi
+    
+    log_message "debug" "找到的IPv6地址:"
+    log_message "debug" "$ipv6_addresses"
+    
+    # 使用for循环代替while read，避免重定向问题
+    local ipv6_addr=""
+    for ipv6_with_prefix in $(echo "$ipv6_addresses"); do
+        local ipv6=$(echo "$ipv6_with_prefix" | cut -d'/' -f1)
+        local prefix_len=$(echo "$ipv6_with_prefix" | cut -d'/' -f2)
+        
+        if [ "$is_lan_interface" = "1" ]; then
+            # ==========================================
+            # LAN接口模式（旁路由）：优先选择公网地址
+            # ==========================================
+            # 检查是否是公网地址 (2xxx:: 或 3xxx:: 开头)
+            if echo "$ipv6" | grep -q -E '^2[0-9a-f][0-9a-f][0-9a-f]:' || \
+               echo "$ipv6" | grep -q -E '^3[0-9a-f][0-9a-f][0-9a-f]:'; then
+                
+                # 排除/128地址和ULA地址
+                if [ "$prefix_len" != "128" ] && \
+                   ! echo "$ipv6" | grep -q '^fd' && \
+                   ! echo "$ipv6" | grep -q '^fc'; then
+                    log_message "info" "LAN模式：使用公网IPv6地址: $ipv6"
+                    ipv6_addr="$ipv6"
+                    break
+                else
+                    log_message "debug" "LAN模式：跳过地址 (前缀: /$prefix_len 或 ULA): $ipv6"
+                fi
+            fi
+        else
+            # ==========================================
+            # WAN接口模式（主路由）：必须使用公网地址
+            # ==========================================
+            # WAN接口模式：只接受以2或3开头的公网地址
+            if echo "$ipv6" | grep -q -E '^2[0-9a-f][0-9a-f][0-9a-f]:' || \
+               echo "$ipv6" | grep -q -E '^3[0-9a-f][0-9a-f][0-9a-f]:'; then
+                
+                # 排除/128地址和ULA地址
+                if [ "$prefix_len" != "128" ] && \
+                   ! echo "$ipv6" | grep -q '^fd' && \
+                   ! echo "$ipv6" | grep -q '^fc'; then
+                    log_message "info" "WAN模式：找到公网IPv6地址: $ipv6"
+                    ipv6_addr="$ipv6"
+                    break
+                else
+                    log_message "debug" "WAN模式：跳过地址 (前缀: /$prefix_len 或 ULA): $ipv6"
+                fi
+            fi
+        fi
+    done
+    
+    # 如果LAN模式没有找到合适的公网地址，使用第一个非ULA地址
+    if [ -z "$ipv6_addr" ] && [ "$is_lan_interface" = "1" ]; then
+        for ipv6_with_prefix in $(echo "$ipv6_addresses"); do
+            local ipv6=$(echo "$ipv6_with_prefix" | cut -d'/' -f1)
+            local prefix_len=$(echo "$ipv6_with_prefix" | cut -d'/' -f2)
+            
+            # 排除ULA地址和/128地址
+            if [ "$prefix_len" != "128" ] && \
+               ! echo "$ipv6" | grep -q '^fd' && \
+               ! echo "$ipv6" | grep -q '^fc'; then
+                ipv6_addr="$ipv6"
+                log_message "info" "LAN模式：使用非ULA IPv6地址: $ipv6_addr"
+                break
+            fi
+        done
+    fi
+    
+    # 最后尝试：如果还是没找到，使用第一个地址
+    if [ -z "$ipv6_addr" ] && [ "$is_lan_interface" = "1" ]; then
+        ipv6_addr=$(echo "$ipv6_addresses" | head -1 | cut -d'/' -f1)
+        log_message "warning" "LAN模式：使用第一个IPv6地址: $ipv6_addr"
+    fi
+    
+    if [ -n "$ipv6_addr" ]; then
+        echo "$ipv6_addr"
+        return 0
+    else
+        log_message "error" "未找到可用的IPv6地址"
+        echo ""
+        return 1
+    fi
+}
+
+# 检查OpenVPN配置
+check_openvpn_config() {
+    log_message "debug" "开始检查OpenVPN配置"
+    
+    # 检查实例是否存在
+    if ! uci -q get openvpn.$OPENVPN_INSTANCE >/dev/null 2>&1; then
+        log_message "error" "OpenVPN实例不存在: $OPENVPN_INSTANCE"
+        return 1
+    fi
+    
+    # 检查是否启用了IPv6（是否有local选项）
+    local has_local=$(uci -q get openvpn.$OPENVPN_INSTANCE.local)
+    if [ -n "$has_local" ]; then
+        log_message "info" "OpenVPN已配置IPv6地址: $has_local"
+        echo "$has_local"
+        return 0
+    else
+        log_message "info" "OpenVPN未启用IPv6配置"
+        echo ""
+        return 0
+    fi
+}
+
+# 主函数开始
+main() {
+    local script_start_time=$(date +%s)
+    
+    # 检查进程锁
+    check_process_lock
+    
+    # 设置退出时清理
+    trap cleanup EXIT
+    
+    log_message "info" "=== Hotplug脚本启动: ACTION=$1, INTERFACE=$2 ==="
+    
+    # 检查超时
+    check_timeout "$script_start_time"
+    
+    # =======================================================
+    # 修改：添加智能接口选择逻辑
+    # =======================================================
+    # 读取配置
+    MONITOR_INTERFACE=$(get_config_value "hotplug_interface" "")
+    IPV6_INTERFACE_CFG=$(get_config_value "hotplug_ipv6_interface" "auto")
+    TEMP_DIR=$(get_config_value "temp_dir" "/tmp/openvpn-admin")
+    
+    # 智能选择IPv6接口
+    IPV6_INTERFACE=""
+    if [ -z "$IPV6_INTERFACE_CFG" ] || [ "$IPV6_INTERFACE_CFG" = "auto" ] || [ "$IPV6_INTERFACE_CFG" = "same" ]; then
+        # 自动模式：使用监控接口
+        IPV6_INTERFACE="$MONITOR_INTERFACE"
+        log_message "info" "IPv6接口选择: 自动模式，使用监控接口: $IPV6_INTERFACE"
+    else
+        # 手动指定接口
+        IPV6_INTERFACE="$IPV6_INTERFACE_CFG"
+        log_message "info" "IPv6接口选择: 手动指定接口: $IPV6_INTERFACE"
+    fi
+    
+    log_message "debug" "配置详情 - 监控接口: $MONITOR_INTERFACE, IPv6接口: $IPV6_INTERFACE, 配置值: $IPV6_INTERFACE_CFG"
+    # =======================================================
+    # 修改结束
+    # =======================================================
+    
+    # 确保临时目录存在
+    mkdir -p "$TEMP_DIR" 2>/dev/null
+    
+    # 检查是否是我们监控的接口
+    if [ -z "$MONITOR_INTERFACE" ]; then
+        log_message "error" "未配置监控接口"
+        exit 1
+    fi
+    
+    ACTION="$1"
+    INTERFACE="$2"
+    
+    log_message "info" "监控接口: $MONITOR_INTERFACE, 当前接口: $INTERFACE, 动作: $ACTION"
+    
+    # 检查是否是我们要处理的接口
+    if [ "$INTERFACE" != "$MONITOR_INTERFACE" ]; then
+        # 简化接口映射检查
+        case "$MONITOR_INTERFACE" in
+            lan6|lan)
+                [ "$INTERFACE" = "br-lan" ] || exit 0
+                log_message "info" "处理逻辑接口 $MONITOR_INTERFACE (对应物理接口 br-lan)"
+                ;;
+            wan6)
+                [ "$INTERFACE" = "wan" ] || exit 0
+                ;;
+            wan)
+                [ "$INTERFACE" = "pppoe-wan" -o "$INTERFACE" = "wan" ] || exit 0
+                ;;
+            *)
+                exit 0
+                ;;
+        esac
+    fi
+    
+    # 只有ifup和ifupdate事件才处理
+    if [ "$ACTION" != "ifup" ] && [ "$ACTION" != "ifupdate" ]; then
+        log_message "debug" "忽略非up/update事件: $ACTION"
+        exit 0
+    fi
+    
+    log_message "info" "开始处理接口事件: $ACTION $INTERFACE (逻辑接口: $MONITOR_INTERFACE)"
+    
+    # 等待网络稳定（对于ifup事件）- 针对PPPoE延长等待时间
+    if [ "$ACTION" = "ifup" ]; then
+        log_message "info" "等待网络稳定..."
+        
+        # 根据接口类型设置不同的等待时间
+        case "$MONITOR_INTERFACE" in
+            wan|wan6)
+                # PPPoE拨号需要更长时间，特别是IPv6获取
+                log_message "debug" "WAN接口（可能是PPPoE），等待60秒确保IPv6获取完成..."
+                sleep 60
+                ;;
+            *)
+                # 其他接口等待30秒
+                log_message "debug" "非WAN接口，等待30秒..."
+                sleep 30
+                ;;
+        esac
+        
+        log_message "debug" "网络稳定等待完成"
+    fi
+    
+    # 检查超时
+    check_timeout "$script_start_time"
+    
+    # =======================================================
+    # 修改：使用智能选择的接口获取IPv6地址
+    # =======================================================
+    # 获取当前公网IPv6地址
+    log_message "debug" "开始获取IPv6地址 (使用接口: $IPV6_INTERFACE)"
+    current_ipv6=$(get_public_ipv6 "$IPV6_INTERFACE")
+    log_message "debug" "获取IPv6地址完成，结果: $current_ipv6"
+    # =======================================================
+    # 修改结束
+    # =======================================================
+    
+    if [ -z "$current_ipv6" ]; then
+        log_message "error" "无法获取IPv6地址，退出处理"
+        exit 1
+    fi
+    
+    log_message "info" "当前IPv6地址: $current_ipv6"
+    
+    # 检查超时
+    check_timeout "$script_start_time"
+    
+    # 检查OpenVPN配置
+    log_message "debug" "调用check_openvpn_config"
+    configured_ipv6=$(check_openvpn_config)
+    check_result=$?
+    log_message "debug" "检查结果: $check_result, 配置地址: $configured_ipv6"
+    
+    if [ $check_result -ne 0 ]; then
+        log_message "error" "OpenVPN配置检查失败"
+        exit 1
+    fi
+    
+    # 检查超时
+    check_timeout "$script_start_time"
+    
+    # 判断是否需要更新
+    log_message "debug" "判断是否需要更新配置"
+    
+    if [ -z "$configured_ipv6" ]; then
+        # OpenVPN没有配置IPv6，添加配置
+        log_message "info" "OpenVPN未配置IPv6，添加IPv6配置: $current_ipv6"
+        
+        # 设置新的IPv6地址
+        log_message "info" "执行: uci set openvpn.$OPENVPN_INSTANCE.local='$current_ipv6'"
+        if ! uci set openvpn.$OPENVPN_INSTANCE.local="$current_ipv6" 2>&1; then
+            log_message "error" "设置IPv6地址失败"
+            exit 1
+        fi
+        
+    else
+        # 检查地址是否相同
+        if [ "$configured_ipv6" = "$current_ipv6" ]; then
+            log_message "info" "IPv6地址未变化，无需更新"
+            exit 0
+        else
+            log_message "info" "地址不同，需要更新: $configured_ipv6 -> $current_ipv6"
+            
+            # 设置新的IPv6地址
+            log_message "info" "执行: uci set openvpn.$OPENVPN_INSTANCE.local='$current_ipv6'"
+            if ! uci set openvpn.$OPENVPN_INSTANCE.local="$current_ipv6" 2>&1; then
+                log_message "error" "设置IPv6地址失败"
+                exit 1
+            fi
         fi
     fi
     
-    return 0
+    # 检查超时
+    check_timeout "$script_start_time"
+    
+    # 提交更改
+    log_message "info" "执行: uci commit openvpn"
+    if ! uci commit openvpn 2>&1; then
+        log_message "error" "配置提交失败"
+        exit 1
+    fi
+    
+    log_message "info" "配置保存成功"
+    
+    # 延迟验证，避免uci缓存问题
+    log_message "debug" "等待1秒让uci配置生效..."
+    sleep 1
+    
+    # 简化验证
+    local verify_config=$(uci -q get openvpn.$OPENVPN_INSTANCE.local 2>/dev/null || echo "")
+    if [ "$verify_config" = "$current_ipv6" ]; then
+        log_message "info" "配置验证成功"
+    else
+        if [ -n "$verify_config" ]; then
+            log_message "warning" "配置验证不匹配，但配置已更新为: $verify_config"
+        else
+            log_message "error" "配置未保存，但继续尝试重启服务"
+        fi
+    fi
+    
+    # 检查超时
+    check_timeout "$script_start_time"
+    
+    # 异步重启OpenVPN服务（避免阻塞hotplug进程）
+    log_message "info" "异步重启OpenVPN服务..."
+    (
+        # 等待一小段时间确保配置完全生效
+        sleep 2
+        
+        # 尝试优雅重启
+        if /etc/init.d/openvpn restart >/dev/null 2>&1; then
+            log_message "info" "OpenVPN服务重启成功"
+        else
+            # 如果优雅重启失败，尝试强制重启
+            log_message "warning" "优雅重启失败，尝试强制重启..."
+            /etc/init.d/openvpn stop >/dev/null 2>&1
+            sleep 1
+            /etc/init.d/openvpn start >/dev/null 2>&1
+            log_message "info" "OpenVPN服务强制重启完成"
+        fi
+    ) &
+    
+    # 检查超时
+    check_timeout "$script_start_time"
+    
+    log_message "info" "=== OpenVPN配置更新完成 ==="
+    
+    # ============================================================
+    # 新增功能：防火墙规则自动更新（仅在原脚本任务完成后执行）
+    # ============================================================
+    
+    # 检查防火墙自动更新是否启用
+    local firewall_enabled=$(get_config_value "hotplug_firewall_enabled" "0")
+    if [ "$firewall_enabled" != "1" ]; then
+        log_message "debug" "防火墙自动更新功能未启用，跳过防火墙更新"
+        log_message "info" "=== Hotplug脚本执行完成 ==="
+        exit 0
+    fi
+    
+    log_message "info" "开始执行防火墙规则自动更新..."
+    
+    # 获取LAN接口的IPv6 /64前缀
+    local lan_ipv6_prefix=$(get_lan_ipv6_prefix)
+    if [ -z "$lan_ipv6_prefix" ]; then
+        log_message "error" "无法获取LAN IPv6 /64前缀，跳过防火墙更新"
+        log_message "info" "=== Hotplug脚本执行完成 ==="
+        exit 0
+    fi
+    
+    log_message "info" "LAN IPv6 /64前缀: $lan_ipv6_prefix"
+    
+    # 更新防火墙规则
+    if update_firewall_rule "$lan_ipv6_prefix"; then
+        log_message "info" "防火墙规则更新成功"
+    else
+        log_message "error" "防火墙规则更新失败"
+    fi
+    
+    # 检查超时
+    check_timeout "$script_start_time"
+    
+    log_message "info" "=== Hotplug脚本执行完成 ==="
 }
 
-# 主逻辑
-case "$1" in
-    ifup|ifdown|ifupdate)
-        if [ -n "$2" ]; then
-            process_interface_change "$1" "$2"
-        fi
-        ;;
-    *)
-        log_message "未知操作: $1"
-        exit 1
-        ;;
-esac
-
+# 运行主函数
+main "$@"
 exit 0
 ]]
     
@@ -537,8 +1201,11 @@ exit 0
         fd:close()
         sys.exec("chmod +x " .. script_path .. " 2>/dev/null")
         
-        -- 创建hotplug配置目录和文件
+        -- 创建hotplug配置
         create_hotplug_config(config)
+        
+        -- 记录日志
+        nixio.syslog("info", "OpenVPN Hotplug脚本已更新: " .. script_path)
         
         return true
     end
@@ -549,9 +1216,17 @@ end
 function create_hotplug_config(config)
     local hotplug_dir = "/etc/hotplug.d/iface"
     local hotplug_script = config.hotplug_script_path or "/etc/openvpn/openvpn_hotplug.sh"
+    local monitor_interface = config.hotplug_interface or ""
     
     -- 确保hotplug目录存在
     sys.exec("mkdir -p " .. hotplug_dir .. " 2>/dev/null")
+    
+    -- 解析接口名，处理逻辑接口
+    local actual_interface = monitor_interface
+    if monitor_interface == "lan6" or monitor_interface == "lan" then
+        -- 对于lan6/lan逻辑接口，也要监控br-lan的物理接口变化
+        actual_interface = "br-lan"
+    end
     
     local config_content = [[
 #!/bin/sh
@@ -561,12 +1236,48 @@ function create_hotplug_config(config)
 
 [ "$ACTION" = "ifup" -o "$ACTION" = "ifdown" -o "$ACTION" = "ifupdate" ] || exit 0
 
-# 只处理我们关心的接口
-INTERFACE_TO_MONITOR="]] .. (config.hotplug_interface or "") .. [["
+# 监控的接口（支持逻辑接口和物理接口）
+INTERFACE_TO_MONITOR="]] .. monitor_interface .. [["
+PHYSICAL_INTERFACE="]] .. (actual_interface or "") .. [["
 
+# 处理逻辑接口：lan6/lan 对应 br-lan
+if [ "$INTERFACE_TO_MONITOR" = "lan6" -o "$INTERFACE_TO_MONITOR" = "lan" ]; then
+    # 当br-lan物理接口变化时，也触发lan6/lan的逻辑处理
+    if [ "$INTERFACE" = "br-lan" ]; then
+        # 设置逻辑接口名，传递给脚本
+        ]] .. hotplug_script .. [[ "$ACTION" "$INTERFACE_TO_MONITOR" &
+        exit 0
+    fi
+fi
+
+# 处理逻辑接口：wan6 对应 wan
+if [ "$INTERFACE_TO_MONITOR" = "wan6" ]; then
+    if [ "$INTERFACE" = "wan" ]; then
+        ]] .. hotplug_script .. [[ "$ACTION" "$INTERFACE_TO_MONITOR" &
+        exit 0
+    fi
+fi
+
+# 处理逻辑接口：wan 对应 pppoe-wan
+if [ "$INTERFACE_TO_MONITOR" = "wan" ]; then
+    if [ "$INTERFACE" = "pppoe-wan" ]; then
+        ]] .. hotplug_script .. [[ "$ACTION" "$INTERFACE_TO_MONITOR" &
+        exit 0
+    fi
+fi
+
+# 直接匹配监控的接口
 if [ "$INTERFACE" = "$INTERFACE_TO_MONITOR" ]; then
     # 执行OpenVPN hotplug脚本
     ]] .. hotplug_script .. [[ "$ACTION" "$INTERFACE" &
+    exit 0
+fi
+
+# 如果没有匹配，检查是否是物理接口对应的逻辑接口
+if [ -n "$PHYSICAL_INTERFACE" -a "$INTERFACE" = "$PHYSICAL_INTERFACE" ]; then
+    # 物理接口变化时，也触发逻辑接口处理
+    ]] .. hotplug_script .. [[ "$ACTION" "$INTERFACE_TO_MONITOR" &
+    exit 0
 fi
 
 exit 0
@@ -578,6 +1289,10 @@ exit 0
         fd:write(config_content)
         fd:close()
         sys.exec("chmod +x " .. config_file .. " 2>/dev/null")
+        
+        -- 记录配置
+        nixio.syslog("info", "OpenVPN Hotplug配置已更新，监控接口: " .. monitor_interface .. 
+                    "，物理接口: " .. actual_interface)
         return true
     end
     return false
@@ -684,6 +1399,223 @@ function add_firewall_port(port)
     return result
 end
 
+-- 检查旁路由IPv6防火墙规则是否存在
+function check_ipv6_firewall_rule()
+    local result = {
+        success = false,
+        exists = false,
+        message = "",
+        rule_name = "",
+        rule_info = {}
+    }
+    
+    -- 获取规则名称（从管理配置中）
+    local config = get_admin_config()
+    local rule_name = config.hotplug_firewall_name or "openvpn_ipv6"
+    result.rule_name = rule_name
+    
+    -- 遍历防火墙规则，查找匹配的规则
+    local rule_exists = false
+    local rule_section = nil
+    
+    uci:foreach("firewall", "rule",
+        function(section)
+            if section.name == rule_name then
+                rule_exists = true
+                rule_section = section[".name"]
+                
+                -- 收集规则信息
+                result.rule_info = {
+                    section = rule_section,
+                    src = section.src or "",
+                    dest = section.dest or "",
+                    proto = section.proto or "",
+                    dest_port = section.dest_port or "",
+                    target = section.target or "",
+                    src_ip = section.src_ip or "",
+                    dest_ip = section.dest_ip or "",
+                    enabled = section.enabled or "1"
+                }
+                
+                return false  -- 停止遍历
+            end
+        end
+    )
+    
+    result.exists = rule_exists
+    result.success = true
+    result.message = rule_exists and "规则存在" or "规则不存在"
+    
+    return result
+end
+
+-- 创建或更新旁路由IPv6防火墙规则
+function update_ipv6_firewall_rule(dest_ip_prefix)
+    local result = {
+        success = false,
+        message = "",
+        created = false,
+        rule_name = ""
+    }
+    
+    -- 获取配置
+    local config = get_admin_config()
+    local rule_name = config.hotplug_firewall_name or "openvpn_ipv6"
+    local enabled = config.hotplug_firewall_enabled or false
+    result.rule_name = rule_name
+    
+    -- 如果未启用防火墙自动更新，直接返回
+    if not enabled then
+        result.success = true
+        result.message = "防火墙自动更新未启用"
+        return result
+    end
+    
+    -- 如果没有目标IP前缀，使用默认值
+    if not dest_ip_prefix or dest_ip_prefix == "" then
+        dest_ip_prefix = "::1/128"  -- 默认使用IPv6环回地址
+    end
+    
+    -- 检查规则是否存在
+    local rule_exists, rule_section = false, nil
+    uci:foreach("firewall", "rule",
+        function(section)
+            if section.name == rule_name then
+                rule_exists = true
+                rule_section = section[".name"]
+                return false
+            end
+        end
+    )
+    
+    if rule_exists and rule_section then
+        -- 更新现有规则
+        local ok, err = pcall(function()
+            -- 更新dest_ip（清除旧值后添加新值）
+            uci:delete("firewall", rule_section, "dest_ip")
+            uci:set_list("firewall", rule_section, "dest_ip", {dest_ip_prefix})
+            
+            -- 确保其他参数正确（按照要求设置默认值）
+            uci:set("firewall", rule_section, "src", "wan")
+            uci:set("firewall", rule_section, "dest", "lan")
+            uci:set("firewall", rule_section, "name", rule_name)
+            uci:set("firewall", rule_section, "proto", "udp tcp")  -- 同时允许TCP和UDP
+            uci:set("firewall", rule_section, "dest_port", "1194")
+            uci:set("firewall", rule_section, "target", "ACCEPT")
+            uci:set_list("firewall", rule_section, "src_ip", {"::/0"})
+            uci:set("firewall", rule_section, "enabled", "1")
+            
+            uci:save("firewall")
+            uci:commit("firewall")
+        end)
+        
+        if ok then
+            result.success = true
+            result.created = false
+            result.message = "旁路由IPv6防火墙规则已更新"
+        else
+            result.message = "更新防火墙规则失败: " .. tostring(err)
+        end
+    else
+        -- 创建新规则
+        local section_name = uci:add("firewall", "rule")
+        
+        if section_name then
+            local ok, err = pcall(function()
+                -- 设置规则参数（按照要求）
+                uci:set("firewall", section_name, "src", "wan")
+                uci:set("firewall", section_name, "dest", "lan")
+                uci:set("firewall", section_name, "name", rule_name)
+                uci:set("firewall", section_name, "proto", "udp tcp")  -- 同时允许TCP和UDP
+                uci:set("firewall", section_name, "dest_port", "1194")
+                uci:set("firewall", section_name, "target", "ACCEPT")
+                uci:set_list("firewall", section_name, "src_ip", {"::/0"})
+                uci:set_list("firewall", section_name, "dest_ip", {dest_ip_prefix})
+                uci:set("firewall", section_name, "enabled", "1")
+                
+                uci:save("firewall")
+                uci:commit("firewall")
+            end)
+            
+            if ok then
+                result.success = true
+                result.created = true
+                result.message = "旁路由IPv6防火墙规则已创建"
+            else
+                result.message = "创建防火墙规则失败: " .. tostring(err)
+                -- 回滚
+                uci:delete("firewall", section_name)
+                uci:save("firewall")
+            end
+        else
+            result.message = "无法创建防火墙规则section"
+        end
+    end
+    
+    -- 如果操作成功，重新加载防火墙
+    if result.success then
+        local reload_result = sys.call("/etc/init.d/firewall reload >/dev/null 2>&1")
+        if reload_result == 0 then
+            result.message = result.message .. "，防火墙已重新加载"
+        else
+            result.message = result.message .. "，但防火墙重新加载失败"
+        end
+    end
+    
+    return result
+end
+
+-- 删除旁路由IPv6防火墙规则
+function delete_ipv6_firewall_rule()
+    local result = {
+        success = false,
+        message = ""
+    }
+    
+    -- 获取规则名称
+    local config = get_admin_config()
+    local rule_name = config.hotplug_firewall_name or "openvpn_ipv6"
+    
+    -- 查找规则
+    local rule_section = nil
+    uci:foreach("firewall", "rule",
+        function(section)
+            if section.name == rule_name then
+                rule_section = section[".name"]
+                return false
+            end
+        end
+    )
+    
+    if rule_section then
+        -- 删除规则
+        local ok, err = pcall(function()
+            uci:delete("firewall", rule_section)
+            uci:save("firewall")
+            uci:commit("firewall")
+        end)
+        
+        if ok then
+            -- 重新加载防火墙
+            local reload_result = sys.call("/etc/init.d/firewall reload >/dev/null 2>&1")
+            result.success = true
+            result.message = "旁路由IPv6防火墙规则已删除"
+            if reload_result == 0 then
+                result.message = result.message .. "，防火墙已重新加载"
+            else
+                result.message = result.message .. "，但防火墙重新加载失败"
+            end
+        else
+            result.message = "删除防火墙规则失败: " .. tostring(err)
+        end
+    else
+        result.success = true
+        result.message = "规则不存在，无需删除"
+    end
+    
+    return result
+end
+
 -- 检查防火墙端口规则（AJAX接口）
 function check_firewall_rule_ajax()
     local result = {
@@ -721,6 +1653,23 @@ function check_firewall_rule_ajax()
         result.message = "未指定端口"
     end
     
+    http.write_json(result)
+end
+
+-- 旁路由IPv6防火墙规则AJAX接口处理函数（新增）
+function action_check_ipv6_firewall()
+    local result = check_ipv6_firewall_rule()
+    http.write_json(result)
+end
+
+function action_create_ipv6_firewall()
+    local dest_ip = http.formvalue("dest_ip") or "::1/128"
+    local result = update_ipv6_firewall_rule(dest_ip)
+    http.write_json(result)
+end
+
+function action_delete_ipv6_firewall()
+    local result = delete_ipv6_firewall_rule()
     http.write_json(result)
 end
 
@@ -855,9 +1804,21 @@ function index()
     entry({"admin", "vpn", "openvpn-admin", "save_uci_config"}, 
           call("save_openvpn_uci_config"))
     
-    -- AJAX接口：检查防火墙规则（新增）
+    -- AJAX接口：检查防火墙规则（新增）- 这是OpenVPN服务的端口规则
     entry({"admin", "vpn", "openvpn-admin", "check_firewall"}, 
           call("check_firewall_rule_ajax"))
+          
+    -- AJAX接口：检查旁路由IPv6防火墙规则（新增）- 旁路由专用，不影响原有功能
+    entry({"admin", "vpn", "openvpn-admin", "check_ipv6_firewall"}, 
+          call("action_check_ipv6_firewall"))
+
+    -- AJAX接口：创建旁路由IPv6防火墙规则（新增）
+    entry({"admin", "vpn", "openvpn-admin", "create_ipv6_firewall"}, 
+          call("action_create_ipv6_firewall"))
+
+    -- AJAX接口：删除旁路由IPv6防火墙规则（新增）
+    entry({"admin", "vpn", "openvpn-admin", "delete_ipv6_firewall"}, 
+          call("action_delete_ipv6_firewall"))      
           
     -- 新增AJAX接口：获取网络接口列表
     entry({"admin", "vpn", "openvpn-admin", "get_interfaces"}, 
@@ -874,6 +1835,7 @@ function index()
 end
 
 -- 获取网络接口列表
+-- 完全重写 action_get_interfaces() 函数
 function action_get_interfaces()
     local result = {
         success = false,
@@ -881,15 +1843,89 @@ function action_get_interfaces()
         message = ""
     }
     
-    -- 直接获取所有活跃的网络接口
-    local cmd = "ip -o link show 2>/dev/null | grep -v 'LOOPBACK' | grep -v 'link-netns' | awk '{print $2}' | sed 's/:$//'"
+    -- 方法1：从UCI network配置获取所有接口
+    local uci = require("luci.model.uci").cursor()
+    local all_interfaces = {}
+    local seen_interfaces = {}
+    
+    -- 从/etc/config/network读取所有接口配置
+    uci:foreach("network", "interface",
+        function(section)
+            local ifname = section[".name"]
+            local device = section.ifname or section.device
+            local proto = section.proto or ""
+            local type = section.type or ""
+            
+            -- 跳过loopback和docker接口
+            if ifname and ifname ~= "loopback" and not ifname:match("^docker") then
+                if not seen_interfaces[ifname] then
+                    seen_interfaces[ifname] = true
+                    
+                    -- 获取接口的实际状态
+                    local status = "down"
+                    local actual_device = device
+                    
+                    -- 对于逻辑接口，尝试获取实际的网络设备
+                    if not actual_device or actual_device == "" then
+                        -- 尝试从ifname获取
+                        actual_device = section.ifname or ""
+                    end
+                    
+                    -- 检查接口状态
+                    if actual_device and actual_device ~= "" then
+                        -- 可能有多个设备（如 "eth0 eth1" 或 "br-lan"）
+                        local first_device = actual_device:match("^([%w%-]+)")
+                        if first_device then
+                            local status_cmd = "cat /sys/class/net/" .. first_device .. "/operstate 2>/dev/null || echo 'down'"
+                            status = util.trim(sys.exec(status_cmd) or "down")
+                        end
+                    else
+                        -- 对于没有明确设备的接口（如lan6），检查是否有IPv6地址
+                        local ipv6_check = sys.exec("ip -6 addr show 2>/dev/null | grep -E 'inet6.*global' | grep -v 'deprecated' | wc -l")
+                        if tonumber(ipv6_check) and tonumber(ipv6_check) > 0 then
+                            status = "up"
+                        end
+                    end
+                    
+                    -- 特殊处理常见接口类型
+                    local display_name = ifname
+                    local desc = ""
+                    
+                    if proto == "pppoe" then
+                        desc = "PPPoE拨号"
+                    elseif proto == "dhcp" then
+                        desc = "DHCP客户端"
+                    elseif proto == "static" then
+                        desc = "静态配置"
+                    elseif type == "bridge" then
+                        desc = "桥接接口"
+                    end
+                    
+                    -- 添加接口信息
+                    table.insert(all_interfaces, {
+                        name = ifname,
+                        device = actual_device or "",
+                        proto = proto,
+                        type = type,
+                        status = status,
+                        display = ifname .. " (" .. proto:upper() .. " - " .. status:upper() .. ")",
+                        config_name = ifname,
+                        description = desc
+                    })
+                end
+            end
+        end
+    )
+    
+    -- 方法2：从系统获取所有物理网络接口作为补充
+    local cmd = "ip -o link show 2>/dev/null | awk '{print $2}' | sed 's/:$//'"
     local output = sys.exec(cmd)
     
     if output and output ~= "" then
         for ifname in output:gmatch("[^\r\n]+") do
             ifname = util.trim(ifname)
             
-            -- 跳过虚拟接口和docker接口
+            -- 跳过不需要的接口
             if not ifname:match("^lo$") and 
                not ifname:match("^docker") and 
                not ifname:match("^veth") and
@@ -903,39 +1939,144 @@ function action_get_interfaces()
                not ifname:match("^siit") and
                not ifname:match("^teql") then
                 
-                -- 检查接口状态
-                local status_cmd = "cat /sys/class/net/" .. ifname .. "/operstate 2>/dev/null || echo 'down'"
-                local status = sys.exec(status_cmd)
-                status = util.trim(status or "down")
+                -- 检查是否已经在UCI接口列表中
+                local already_exists = false
+                for _, existing_iface in ipairs(all_interfaces) do
+                    if existing_iface.name == ifname or 
+                       (existing_iface.device and existing_iface.device:find(ifname)) then
+                        already_exists = true
+                        break
+                    end
+                end
                 
-                -- 获取接口类型
-                local type_cmd = "cat /sys/class/net/" .. ifname .. "/type 2>/dev/null || echo '0'"
-                local iftype = tonumber(sys.exec(type_cmd)) or 0
-                
-                -- 1=ethernet, 32=bridge, 772=loopback, 65534=tun/tap
-                if iftype == 1 or iftype == 32 or iftype == 65534 then
-                    table.insert(result.interfaces, {
-                        name = ifname,
-                        status = (status == "up") and "up" or "down",
-                        display = ifname .. " (" .. status:upper() .. ")",
-                        config_name = ifname
-                    })
+                if not already_exists and not seen_interfaces[ifname] then
+                    -- 检查接口状态
+                    local status_cmd = "cat /sys/class/net/" .. ifname .. "/operstate 2>/dev/null || echo 'down'"
+                    local status = sys.exec(status_cmd)
+                    status = util.trim(status or "down")
+                    
+                    -- 获取接口类型
+                    local type_cmd = "cat /sys/class/net/" .. ifname .. "/type 2>/dev/null || echo '0'"
+                    local iftype = tonumber(sys.exec(type_cmd)) or 0
+                    
+                    -- 只添加物理接口
+                    if iftype == 1 or iftype == 32 or iftype == 65534 then
+                        seen_interfaces[ifname] = true
+                        
+                        table.insert(all_interfaces, {
+                            name = ifname,
+                            device = ifname,
+                            proto = "unknown",
+                            type = "physical",
+                            status = status,
+                            display = ifname .. " (PHY - " .. status:upper() .. ")",
+                            config_name = ifname,
+                            description = "物理接口"
+                        })
+                    end
                 end
             end
         end
     end
     
+    -- 添加特定的逻辑接口（如果不存在）
+    local special_interfaces = {"lan", "lan6", "wan", "wan6"}
+    for _, special_iface in ipairs(special_interfaces) do
+        if not seen_interfaces[special_iface] then
+            -- 检查这个逻辑接口是否在UCI配置中
+            local iface_config = uci:get("network", special_iface)
+            if iface_config then
+                seen_interfaces[special_iface] = true
+                
+                -- 获取设备信息
+                local device = uci:get("network", special_iface, "ifname") or 
+                               uci:get("network", special_iface, "device") or ""
+                local proto = uci:get("network", special_iface, "proto") or "unknown"
+                local type = uci:get("network", special_iface, "type") or "interface"
+                
+                -- 检查状态
+                local status = "down"
+                if device and device ~= "" then
+                    local first_device = device:match("^([%w%-]+)")
+                    if first_device then
+                        local status_cmd = "cat /sys/class/net/" .. first_device .. "/operstate 2>/dev/null || echo 'down'"
+                        status = util.trim(sys.exec(status_cmd) or "down")
+                    end
+                else
+                    -- 对于lan6等逻辑接口，检查是否有IPv6地址
+                    local ipv6_check = sys.exec("ip -6 addr show 2>/dev/null | grep 'inet6.*global' | wc -l")
+                    if tonumber(ipv6_check) and tonumber(ipv6_check) > 0 then
+                        status = "up"
+                    end
+                end
+                
+                table.insert(all_interfaces, {
+                    name = special_iface,
+                    device = device,
+                    proto = proto,
+                    type = type,
+                    status = status,
+                    display = special_iface .. " (" .. proto:upper() .. " - " .. status:upper() .. ")",
+                    config_name = special_iface,
+                    description = "逻辑接口"
+                })
+            end
+        end
+    end
+    
     -- 按名称排序
-    table.sort(result.interfaces, function(a, b)
+    table.sort(all_interfaces, function(a, b)
+        -- 优先显示wan/pppoe接口
+        if a.name:match("wan") and not b.name:match("wan") then
+            return true
+        elseif not a.name:match("wan") and b.name:match("wan") then
+            return false
+        end
+        
+        -- 然后显示lan接口
+        if a.name:match("lan") and not b.name:match("lan") then
+            return true
+        elseif not a.name:match("lan") and b.name:match("lan") then
+            return false
+        end
+        
+        -- 最后按字母排序
         return a.name < b.name
     end)
     
+    result.interfaces = all_interfaces
     result.success = true
     
     http.write_json(result)
 end
 
+-- 添加一个辅助函数来检查接口是否存在
+function check_interface_exists(interface_name)
+    local uci = require("luci.model.uci").cursor()
+    
+    -- 方法1：检查UCI配置
+    local uci_exists = uci:get("network", interface_name)
+    if uci_exists then
+        return true, "uci"
+    end
+    
+    -- 方法2：检查系统接口
+    local sys_check = sys.exec("ip link show " .. interface_name .. " 2>/dev/null | head -1")
+    if sys_check and sys_check ~= "" then
+        return true, "system"
+    end
+    
+    -- 方法3：检查网络配置文件
+    local network_content = sys.exec("cat /etc/config/network 2>/dev/null | grep \"config interface.*'" .. interface_name .. "'\"")
+    if network_content and network_content ~= "" then
+        return true, "config"
+    end
+    
+    return false, "not_found"
+end
+
 -- 获取指定接口的IPv6地址
+-- 修改 action_get_interface_ipv6() 函数
 function action_get_interface_ipv6()
     local result = {
         success = false,
@@ -951,34 +2092,114 @@ function action_get_interface_ipv6()
         return
     end
     
-    -- 获取接口的所有IPv6地址
-    local cmd = "ip -6 addr show dev " .. interface .. " 2>/dev/null | grep 'inet6.*global'"
-    local ipv6_output = sys.exec(cmd)
+    -- 获取UCI cursor
+    local uci = require("luci.model.uci").cursor()
     
-    if ipv6_output and ipv6_output ~= "" then
-        -- 优先选择公网IPv6地址
-        for line in ipv6_output:gmatch("[^\r\n]+") do
-            local ipv6_address = line:match("inet6%s+([%x:]+)/")
-            if ipv6_address then
-                -- 检查是否是公网地址 (240e:: 开头)
-                if ipv6_address:match("^240e:") then
-                    result.ipv6_address = ipv6_address
-                    result.success = true
-                    break
+    -- 获取接口的实际设备
+    local actual_device = ""
+    local iface_config = uci:get("network", interface)
+    
+    if iface_config then
+        -- 从UCI配置获取设备名
+        actual_device = uci:get("network", interface, "ifname") or 
+                        uci:get("network", interface, "device") or ""
+    else
+        -- 如果UCI中没有配置，直接使用接口名
+        actual_device = interface
+    end
+    
+    -- 处理逻辑接口的特殊情况
+    local interface_aliases = {
+        ["lan"] = "br-lan",
+        ["lan6"] = "br-lan",
+        ["wan6"] = "wan",
+        ["wan"] = "pppoe-wan"
+    }
+    
+    -- 获取IPv6地址的函数
+    local function get_ipv6_for_device(dev_name)
+        if not dev_name or dev_name == "" then
+            return nil
+        end
+        
+        -- 设备名可能包含多个设备（如 "eth0 eth1"），取第一个
+        local first_device = dev_name:match("^([%w%-]+)")
+        if not first_device then
+            return nil
+        end
+        
+        -- 获取该设备的所有IPv6地址
+        local cmd = "ip -6 addr show dev " .. first_device .. " 2>/dev/null | grep 'inet6.*global' | grep -v 'deprecated'"
+        local ipv6_output = sys.exec(cmd)
+        
+        if ipv6_output and ipv6_output ~= "" then
+            -- 收集所有公网IPv6地址
+            local addresses = {}
+            for line in ipv6_output:gmatch("[^\r\n]+") do
+                local ipv6_address = line:match("inet6%s+([%x:]+)/")
+                if ipv6_address then
+                    -- 检查是否是公网地址（2xxx:: 或 3xxx:: 开头）
+                    if ipv6_address:match("^2[0-9a-f][0-9a-f][0-9a-f]:") or 
+                       ipv6_address:match("^3[0-9a-f][0-9a-f][0-9a-f]:") then
+                        table.insert(addresses, ipv6_address)
+                    end
                 end
-                -- 如果没有公网地址，使用第一个找到的全局地址
-                if result.ipv6_address == "" then
-                    result.ipv6_address = ipv6_address
-                    result.success = true
-                end
+            end
+            
+            -- 返回第一个找到的公网地址
+            if #addresses > 0 then
+                return addresses[1]
             end
         end
         
-        if result.ipv6_address == "" then
-            result.message = "接口 " .. interface .. " 没有全局IPv6地址"
+        return nil
+    end
+    
+    -- 尝试从实际设备获取IPv6地址
+    local ipv6_address = get_ipv6_for_device(actual_device)
+    
+    -- 如果从实际设备获取失败，尝试从接口别名获取
+    if not ipv6_address and interface_aliases[interface] then
+        local alias_device = interface_aliases[interface]
+        
+        -- 检查别名设备是否存在
+        local check_cmd = "ip link show " .. alias_device .. " 2>/dev/null"
+        local alias_exists = sys.exec(check_cmd) and sys.exec(check_cmd) ~= ""
+        
+        if alias_exists then
+            ipv6_address = get_ipv6_for_device(alias_device)
+            if ipv6_address then
+                result.message = "通过关联接口 " .. alias_device .. " 获取"
+            end
+        end
+    end
+    
+    -- 最后尝试：对于lan6等逻辑接口，直接扫描所有接口的IPv6地址
+    if not ipv6_address and (interface == "lan6" or interface == "lan") then
+        -- 获取所有接口的第一个公网IPv6地址
+        local cmd = "ip -6 addr show 2>/dev/null | grep 'inet6.*global' | grep -v 'deprecated' | head -1"
+        local ipv6_line = sys.exec(cmd)
+        if ipv6_line then
+            local ipv6_addr = ipv6_line:match("inet6%s+([%x:]+)/")
+            if ipv6_addr and (ipv6_addr:match("^2[0-9a-f]:") or ipv6_addr:match("^3[0-9a-f]:")) then
+                ipv6_address = ipv6_addr
+                result.message = "从系统获取公网IPv6地址"
+            end
+        end
+    end
+    
+    if ipv6_address then
+        result.ipv6_address = ipv6_address
+        result.success = true
+        if not result.message or result.message == "" then
+            result.message = "成功获取IPv6地址"
         end
     else
-        result.message = "接口 " .. interface .. " 没有全局IPv6地址"
+        result.message = "接口 " .. interface .. " 没有可用的公网IPv6地址"
+        -- 提供调试信息
+        if actual_device and actual_device ~= "" then
+            result.message = result.message .. " (设备: " .. actual_device .. ")"
+        end
     end
     
     http.write_json(result)
@@ -1127,8 +2348,12 @@ function save_admin_config()
         -- 新增hotplug配置
         "hotplug_enabled",
         "hotplug_interface",
+        "hotplug_ipv6_interface",
         "hotplug_ipv6_address",
-        "hotplug_script_path"
+        "hotplug_script_path",
+        -- 新增hotplug旁路由防火墙配置项
+        "hotplug_firewall_enabled",
+        "hotplug_firewall_name"
     }
     
     local section = uci:get_first("openvpn-admin", "settings")
@@ -1592,44 +2817,82 @@ function get_openvpn_port_and_proto()
     return port, proto
 end
 
--- 简化的OpenVPN状态检查（只检查进程）
+-- 简化的OpenVPN状态检查（检查进程端口）
 function check_openvpn_service()
     local service_status = "stopped"
     local service_color = "red"
     local service_text = "已停止"
     
-    -- 只检查进程是否存在（最可靠的指标）
+    -- 1. 先检查进程是否存在
     local process_found = false
+    local pid = nil
     
-    -- 方法1：使用pgrep检查
-    local pgrep_result = sys.exec("pgrep -f 'openvpn' 2>/dev/null")
-    if pgrep_result and pgrep_result ~= "" then
-        pgrep_result = util.trim(pgrep_result)
-        if pgrep_result:match("^%d+") then
+    -- 使用更精确的grep命令，排除grep进程
+    local ps_cmd = "ps | grep -v grep | grep 'openvpn' | head -1"
+    local ps_result = sys.exec(ps_cmd)
+    
+    if ps_result and ps_result ~= "" then
+        -- 提取PID
+        pid = ps_result:match("^%s*(%d+)")
+        if pid then
             process_found = true
         end
     end
     
-    -- 方法2：使用ps检查（备用）
+    -- 备用方法：使用pgrep
     if not process_found then
-        local ps_result = sys.exec("ps | grep -v grep | grep openvpn")
-        if ps_result and ps_result ~= "" and ps_result:match("openvpn") then
-            -- 检查是否有有效的PID
-            local lines = util.split(ps_result, "\n")
-            for _, line in ipairs(lines) do
-                line = util.trim(line)
-                if line:match("^%d+") and line:match("openvpn") then
-                    process_found = true
-                    break
-                end
+        local pgrep_result = sys.exec("pgrep -f 'openvpn' 2>/dev/null")
+        if pgrep_result and pgrep_result ~= "" then
+            pid = util.trim(pgrep_result):match("%d+")
+            if pid then
+                process_found = true
             end
         end
     end
     
     if process_found then
-        service_status = "running"
-        service_color = "green"
-        service_text = "运行中"
+        -- 2. 检查端口是否在监听（关键修复）
+        local port_listening = false
+        local port, proto = get_openvpn_port_and_proto()
+        
+        if port then
+            -- 检查IPv4端口监听
+            local netstat_cmd = string.format("netstat -ulnp 2>/dev/null | grep ':%s ' | grep %s", port, pid)
+            local netstat_result = sys.exec(netstat_cmd)
+            
+            -- 检查IPv6端口监听
+            local netstat_cmd6 = string.format("netstat -ulnp 2>/dev/null | grep ':%s ' | grep %s", port, pid)
+            local netstat_result6 = sys.exec(netstat_cmd6)
+            
+            -- 尝试ss命令
+            local ss_cmd = string.format("ss -ulnp 2>/dev/null | grep ':%s' | grep pid=%s", port, pid)
+            local ss_result = sys.exec(ss_cmd)
+            
+            if (netstat_result and netstat_result ~= "") or 
+               (netstat_result6 and netstat_result6 ~= "") or
+               (ss_result and ss_result ~= "") then
+                port_listening = true
+            end
+            
+            -- 如果还是没找到，可能是IPv6格式问题，用更通用的检查
+            if not port_listening then
+                local simple_check = sys.exec(string.format("netstat -anp 2>/dev/null | grep :%s | grep %s", port, pid))
+                if simple_check and simple_check ~= "" then
+                    port_listening = true
+                end
+            end
+        end
+        
+        if port_listening then
+            service_status = "running"
+            service_color = "green"
+            service_text = "运行中"
+        else
+            -- 进程存在但没有监听端口，可能是启动失败
+            service_status = "error"
+            service_color = "orange"
+            service_text = "进程存在但端口未监听"
+        end
     else
         service_status = "stopped"
         service_color = "red"
@@ -1993,71 +3256,13 @@ end
 
 -- 启动OpenVPN服务
 function start_openvpn_service()
-    local result = {
-        success = false,
-        message = ""
-    }
-    
-    local ret = sys.call("/etc/init.d/openvpn start >/dev/null 2>&1")
-    
-    if ret == 0 then
-        result.success = true
-        result.message = "OpenVPN服务启动成功"
-    else
-        result.message = "OpenVPN服务启动失败"
-    end
-    
+    local result = set_openvpn_service_state(true)
     http.write_json(result)
 end
 
 -- 停止OpenVPN服务
 function stop_openvpn_service()
-    local result = {
-        success = false,
-        message = "",
-        debug_info = {}
-    }
-    
-    table.insert(result.debug_info, "停止前状态检查开始")
-    
-    local service_output = sys.exec("/etc/init.d/openvpn status 2>/dev/null")
-    table.insert(result.debug_info, "服务状态: " .. (service_output or "nil"))
-    
-    local pgrep_result = sys.exec("pgrep -f 'openvpn' 2>/dev/null | head -1")
-    table.insert(result.debug_info, "pgrep结果: " .. (pgrep_result or "nil"))
-    
-    local ret = sys.call("/etc/init.d/openvpn stop >/dev/null 2>&1")
-    
-    if ret == 0 then
-        sys.exec("sleep 1")
-        
-        local verify_output = sys.exec("/etc/init.d/openvpn status 2>/dev/null")
-        table.insert(result.debug_info, "验证状态: " .. (verify_output or "nil"))
-        
-        local pgrep_verify = sys.exec("pgrep -f 'openvpn' 2>/dev/null | head -1")
-        table.insert(result.debug_info, "验证pgrep: " .. (pgrep_verify or "nil"))
-        
-        if verify_output and verify_output:match("inactive") then
-            result.success = true
-            result.message = "OpenVPN服务已停止"
-        elseif not pgrep_verify or pgrep_verify == "" then
-            result.success = true
-            result.message = "OpenVPN服务已停止"
-        else
-            local kill_ret = sys.call("killall -9 openvpn 2>/dev/null")
-            table.insert(result.debug_info, "强制杀死结果: " .. tostring(kill_ret))
-            
-            if kill_ret == 0 then
-                result.success = true
-                result.message = "OpenVPN服务已强制停止"
-            else
-                result.message = "OpenVPN服务停止失败，请手动检查"
-            end
-        end
-    else
-        result.message = "OpenVPN服务停止失败"
-    end
-    
+    local result = set_openvpn_service_state(false)
     http.write_json(result)
 end
 

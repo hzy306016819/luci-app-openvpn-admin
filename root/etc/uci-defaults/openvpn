@@ -19,10 +19,6 @@ if [ -f "/etc/openvpn/renewcert.sh" ]; then
     chmod +x /etc/openvpn/renewcert.sh
 fi
 
-if [ -f "/etc/openvpn/openvpn_ipv6" ]; then
-    chmod +x /etc/openvpn/openvpn_ipv6
-fi
-
 uci -q batch <<-EOF >/dev/null
 	delete network.vpn0
 	set network.vpn0=interface
