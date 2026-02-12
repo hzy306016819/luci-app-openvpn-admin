@@ -73,7 +73,6 @@ jobs:
           CONFIG_TARGET_x86_64_DEVICE_generic=y
           # 启用核心包
           CONFIG_PACKAGE_luci-app-openvpn-admin=y
-          CONFIG_PACKAGE_openvpn-openssl=y
 
           CONFIG_PACKAGE_openvpn-easy-rsa=y
           # CONFIG_PACKAGE_openvpn-mbedtls is not set
@@ -191,7 +190,13 @@ jobs:
           libopenssl_IPK=$(find bin -name "*libopenssl*.ipk" -type f | head -1)
           if [ -n "$libopenssl_IPK" ]; then
             cp "$libopenssl_IPK" ../output-x86_64/
-           
+          fi
+
+          # 复制主插件 IPK
+          easy-rsa_IPK=$(find bin -name "*easy-rsa*.ipk" -type f | head -1)
+          if [ -n "$easy-rsa_IPK" ]; then
+            cp "$easy-rsa_IPK" ../output-x86_64/
+          fi
           
           # 可选：复制其他依赖 IPK（如有）
           for pkg in $OTHER_DEPENDENCIES; do
