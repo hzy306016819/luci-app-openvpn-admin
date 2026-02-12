@@ -75,9 +75,18 @@ jobs:
           CONFIG_PACKAGE_luci-app-openvpn-admin=y
           CONFIG_PACKAGE_openvpn-openssl=y
 
-          CONFIG_OPENVPN_openssl_ENABLE_MANAGEMENT=y
+          CONFIG_PACKAGE_openvpn-easy-rsa=y
+          # CONFIG_PACKAGE_openvpn-mbedtls is not set
+          CONFIG_PACKAGE_openvpn-openssl=y
           CONFIG_OPENVPN_openssl_ENABLE_LZO=y
           CONFIG_OPENVPN_openssl_ENABLE_LZ4=y
+          # CONFIG_OPENVPN_openssl_ENABLE_X509_ALT_USERNAME is not set
+          CONFIG_OPENVPN_openssl_ENABLE_MANAGEMENT=y
+          CONFIG_OPENVPN_openssl_ENABLE_FRAGMENT=y
+          CONFIG_OPENVPN_openssl_ENABLE_PORT_SHARE=y
+          # CONFIG_OPENVPN_openssl_ENABLE_IPROUTE2 is not set
+          # CONFIG_OPENVPN_openssl_ENABLE_DCO is not set
+          CONFIG_OPENVPN_openssl_ENABLE_SMALL=y
 
           CONFIG_PACKAGE_libopenssl3=y
           CONFIG_PACKAGE_libustream-openssl=y
