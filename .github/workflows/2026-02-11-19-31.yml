@@ -68,8 +68,8 @@ jobs:
           ./scripts/feeds update -a -f
           # 优先安装核心依赖
           ./scripts/feeds install -f openvpn-openssl openssl luci-base luci-lib-jsonc luci-compat
-          # 安装openssl相关库
-          ./scripts/feeds install libopenssl3 libssl3 libcrypto3 || true
+          # 安装全部库
+          ./scripts/feeds install -a -f || true
           echo "==== 已安装的 feeds ===="
           ./scripts/feeds list | grep -E "luci|openvpn|curl|openssl|ssl|crypto"
           # 验证 openvpn 和 openssl 目录是否存在
@@ -144,19 +144,12 @@ jobs:
           # openssl-util (命令行工具)
           CONFIG_PACKAGE_openssl-util=y
 
-          # aria2 OpenSSL 配置
-          CONFIG_ARIA2_OPENSSL=y
-          CONFIG_PACKAGE_aria2-openssl=y
-
           # wget-ssl (带SSL支持的wget)
           CONFIG_PACKAGE_wget-ssl=y
 
           # luci-lib-nixio_openssl (Luci网络IO库)
           CONFIG_PACKAGE_luci-lib-nixio_openssl=y
-
-          # PHP8 OpenSSL模块
-          CONFIG_PACKAGE_php8-mod-openssl=y
-
+          
           # 其他依赖OpenSSL的包
           CONFIG_PACKAGE_luci-app-passwall=y
           CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y
