@@ -1,397 +1,377 @@
-name: 编译luci-app-openvpn-admin（含完整依赖）
-on:
-  workflow_dispatch:
-    inputs:
-      clean_build:
-        description: '是否完整清理后编译'
-        required: false
-        default: 'true'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
-
-env:
-  SDK_VERSION: "24.10.0"
-  SDK_URL: "https://downloads.immortalwrt.org/releases/${{ env.SDK_VERSION }}/targets/x86/64/immortalwrt-sdk-${{ env.SDK_VERSION }}-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.xz"
-  PLUGIN_REPO: "https://github.com/hzy306016819/luci-app-openvpn-admin.git"
-  PLUGIN_NAME: "luci-app-openvpn-admin"
-  OPENVPN_PKG: "openvpn-openssl"
-  MAKE_JOBS: 4
+name: 编译openssl_libopenssl3 luci-app-openvpn-admin (X86_64)
+on: 
+  workflow_dispatch:  # 手动运行，不自动触发
 
 jobs:
-  build-plugin-with-deps:
+  build-x86:
     runs-on: ubuntu-22.04
-    timeout-minutes: 240
-    
+    timeout-minutes: 180
+    env:
+      MAKE_JOBS: 4
+      # 替换为ImmortalWrt 24.10最新SDK地址（x86_64）
+      SDK_URL: "https://downloads.immortalwrt.org/releases/24.10.0/targets/x86/64/immortalwrt-sdk-24.10.0-x86-64_gcc-13.2.0_musl.Linux-x86_64.tar.xz"
+      # 核心依赖（适配24.10分支）
+      CORE_DEPENDENCIES: "openvpn-openssl luci-app-openvpn-admin libopenssl3"
+      # 完整依赖列表（适配24.10分支）
+      OTHER_DEPENDENCIES: "openssl-util curl luci-lib-jsonc luci-compat luci-base libssl3 libcrypto3"
+
     steps:
       - name: 1. 检出代码
         uses: actions/checkout@v4
 
-      - name: 2. 安装系统依赖
+      - name: 2. 安装编译依赖
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential libncurses5-dev gawk git wget unzip \
-            python3 python3-pip file rsync curl python3-pyelftools subversion time \
-            libssl-dev uuid-dev zlib1g-dev
-          sudo pip3 install pyelftools
+          sudo apt-get update && sudo apt-get install -y build-essential libncurses5-dev gawk git wget unzip python3 python3-pip file rsync curl python3-pyelftools subversion time
+          sudo pip3 install pyelftools || true
 
-      - name: 3. 下载并解压SDK
+      - name: 3. 下载并解压 SDK
+        id: sdk
         run: |
-          echo "下载SDK: ${{ env.SDK_URL }}"
-          wget --timeout=60 --tries=3 ${{ env.SDK_URL }} -O sdk.tar.xz || {
-            echo "SDK下载失败，尝试备用版本"
-            wget https://downloads.immortalwrt.org/releases/23.05.5/targets/x86/64/immortalwrt-sdk-23.05.5-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz -O sdk.tar.xz
-          }
-          tar xf sdk.tar.xz
-          mv $(find . -maxdepth 1 -type d -name "*sdk*" | head -1) openwrt-sdk
-          cd openwrt-sdk
-          echo "SDK版本信息:"
-          cat .version 2>/dev/null || echo "无版本文件"
+          wget --timeout=60 --tries=3 $SDK_URL -O sdk.tar.xz || { echo "SDK 下载失败"; exit 1; }
+          tar xf sdk.tar.xz && mv $(find . -maxdepth 1 -type d -name "*sdk*" | head -1) openwrt-sdk
+          ls -la openwrt-sdk/
 
-      - name: 4. 创建标准feeds.conf（24.10分支）
+      - name: 4. 替换feeds源为24.10分支（核心修改）
         run: |
           cd openwrt-sdk
-          # 修复：<<-EOF + EOF顶格
-          cat > feeds.conf.default <<-EOF
+          # 备份原有feeds配置
+          cp feeds.conf.default feeds.conf.default.bak
+          # 写入用户指定的24.10分支feeds源
+          cat > feeds.conf.default << EOF
           src-git packages https://github.com/immortalwrt/packages.git;openwrt-24.10
           src-git luci https://github.com/immortalwrt/luci.git;openwrt-24.10
           src-git routing https://github.com/openwrt/routing.git;openwrt-24.10
           src-git telephony https://github.com/openwrt/telephony.git;openwrt-24.10
           EOF
-          echo "✅ feeds.conf.default 已创建"
+          # 验证feeds配置
+          echo "==== 已配置的feeds源 ===="
           cat feeds.conf.default
 
-      - name: 5. 更新并安装feeds
+      - name: 5. 准备插件文件
         run: |
           cd openwrt-sdk
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
+          rm -rf package/luci-app-openvpn-admin && mkdir -p package/luci-app-openvpn-admin
+          [ -f ../Makefile ] && cp ../Makefile package/luci-app-openvpn-admin/
+          [ -d ../luasrc ] && cp -r ../luasrc package/luci-app-openvpn-admin/
+          [ -d ../root ] && cp -r ../root package/luci-app-openvpn-admin/
+          if [ -d ../files ]; then
+            mkdir -p package/luci-app-openvpn-admin/root
+            cp -r ../files/* package/luci-app-openvpn-admin/root/
+          fi
+          echo "==== 插件目录结构 ===="
+          find package/luci-app-openvpn-admin -type d | sort | head -20
 
-      - name: 6. 下载插件源码
+      - name: 6. 强制更新并安装依赖源
         run: |
           cd openwrt-sdk
-          rm -rf package/${{ env.PLUGIN_NAME }}
-          git clone ${{ env.PLUGIN_REPO }} package/${{ env.PLUGIN_NAME }}
-          echo "✅ 插件源码已下载至 package/${{ env.PLUGIN_NAME }}"
-          ls -la package/${{ env.PLUGIN_NAME }}
+          # 强制更新所有 feeds（使用新配置的24.10分支）
+          ./scripts/feeds update -a -f
+          # 优先安装核心依赖
+          ./scripts/feeds install -f openvpn-openssl openssl luci-base luci-lib-jsonc luci-compat
+          # 安装openssl相关库
+          ./scripts/feeds install libopenssl3 libssl3 libcrypto3 || true
+          echo "==== 已安装的 feeds ===="
+          ./scripts/feeds list | grep -E "luci|openvpn|curl|openssl|ssl|crypto"
+          # 验证 openvpn 和 openssl 目录是否存在
+          if [ -d "feeds/packages/net/openvpn" ]; then
+            echo "✅ openvpn-openssl 源已找到"
+          else
+            echo "⚠ openvpn-openssl 源未找到，尝试手动下载"
+            mkdir -p feeds/packages/net/openvpn
+            curl -sSL https://raw.githubusercontent.com/immortalwrt/packages/openwrt-24.10/net/openvpn/Makefile -o feeds/packages/net/openvpn/Makefile
+          fi
+          if [ -d "feeds/packages/libs/openssl" ]; then
+            echo "✅ openssl 源已找到"
+          else
+            echo "⚠ openssl 源未找到，尝试手动下载"
+            mkdir -p feeds/packages/libs/openssl
+            curl -sSL https://raw.githubusercontent.com/immortalwrt/packages/openwrt-24.10/libs/openssl/Makefile -o feeds/packages/libs/openssl/Makefile
+          fi
 
-      - name: 7. 生成完整配置（强制启用MANAGEMENT）
+      - name: 7. 生成配置（启用 MANAGEMENT 接口 + 核心包 + openssl）
         run: |
           cd openwrt-sdk
-          cat > .config <<-EOF
-          # 目标架构
+          cat > .config << EOF
           CONFIG_TARGET_x86=y
           CONFIG_TARGET_x86_64=y
           CONFIG_TARGET_x86_64_DEVICE_generic=y
-          
-          # 主插件
-          CONFIG_PACKAGE_${{ env.PLUGIN_NAME }}=y
-          
-          # 依赖包（根据Makefile）
-          CONFIG_PACKAGE_luci-compat=y
+          # 启用核心包
+          CONFIG_PACKAGE_luci-app-openvpn-admin=y
           CONFIG_PACKAGE_openvpn-openssl=y
-          CONFIG_PACKAGE_openvpn-easy-rsa=y
-          CONFIG_PACKAGE_kmod-tun=y
-          CONFIG_PACKAGE_netcat=y
-          CONFIG_PACKAGE_jq=y
-          CONFIG_PACKAGE_bash=y
-          CONFIG_PACKAGE_openssl-util=y
-          
-          # openvpn-openssl 完整功能配置
-          CONFIG_OPENVPN_openssl_ENABLE_MANAGEMENT=y
-          CONFIG_OPENVPN_openssl_ENABLE_IPROUTE2=y
+          # 启用openssl相关库
+          # OpenVPN OpenSSL
+          CONFIG_PACKAGE_openvpn-openssl=y
           CONFIG_OPENVPN_openssl_ENABLE_LZO=y
-          CONFIG_OPENVPN_openssl_ENABLE_TUN=y
-          CONFIG_OPENVPN_openssl_ENABLE_AUTH_PAM=y
           CONFIG_OPENVPN_openssl_ENABLE_LZ4=y
+          CONFIG_OPENVPN_openssl_ENABLE_MANAGEMENT=y
           CONFIG_OPENVPN_openssl_ENABLE_FRAGMENT=y
           CONFIG_OPENVPN_openssl_ENABLE_PORT_SHARE=y
           CONFIG_OPENVPN_openssl_ENABLE_SMALL=y
-          
-          # OpenSSL 完整功能
-          CONFIG_PACKAGE_libopenssl3=y
-          CONFIG_PACKAGE_libssl3=y
-          CONFIG_PACKAGE_libcrypto3=y
-          CONFIG_OPENSSL_WITH_TLS13=y
+          # wpad-openssl (无线加密)
+          CONFIG_PACKAGE_wpad-openssl=y
+          CONFIG_DEFAULT_wpad-openssl=y
+
+          # libustream-openssl (HTTP/HTTPS流)
+          CONFIG_PACKAGE_libustream-openssl=y
+          CONFIG_DEFAULT_libustream-openssl=y
+
+          # libcurl OpenSSL 支持
+          CONFIG_LIBCURL_OPENSSL=y
+
+          # libopenssl (主库)
+          CONFIG_PACKAGE_libopenssl=y
+          CONFIG_OPENSSL_OPTIMIZE_SPEED=y
+          CONFIG_OPENSSL_WITH_ASM=y
           CONFIG_OPENSSL_WITH_DEPRECATED=y
-          CONFIG_OPENSSL_WITH_COMPRESSION=y
-          CONFIG_OPENSSL_WITH_ENGINE=y
-          CONFIG_OPENSSL_WITH_PSK=y
+          CONFIG_OPENSSL_WITH_ERROR_MESSAGES=y
+          CONFIG_OPENSSL_WITH_TLS13=y
+          CONFIG_OPENSSL_WITH_NPN=y
           CONFIG_OPENSSL_WITH_SRP=y
+          CONFIG_OPENSSL_WITH_CMS=y
+          CONFIG_OPENSSL_WITH_CHACHA_POLY1305=y
+          CONFIG_OPENSSL_WITH_IDEA=y
+          CONFIG_OPENSSL_WITH_SEED=y
+          CONFIG_OPENSSL_WITH_MDC2=y
+          CONFIG_OPENSSL_WITH_WHIRLPOOL=y
+          CONFIG_OPENSSL_ENGINE=y
+
+          # libopenssl 组件
+          CONFIG_PACKAGE_libopenssl-afalg_sync=y
+          CONFIG_PACKAGE_libopenssl-conf=y
+          CONFIG_PACKAGE_libopenssl-devcrypto=y
+          CONFIG_PACKAGE_libopenssl-legacy=y
+
+          # openssl-util (命令行工具)
+          CONFIG_PACKAGE_openssl-util=y
+
+          # aria2 OpenSSL 配置
+          CONFIG_ARIA2_OPENSSL=y
+          CONFIG_PACKAGE_aria2-openssl=y
+
+          # wget-ssl (带SSL支持的wget)
+          CONFIG_PACKAGE_wget-ssl=y
+
+          # luci-lib-nixio_openssl (Luci网络IO库)
+          CONFIG_PACKAGE_luci-lib-nixio_openssl=y
+
+          # PHP8 OpenSSL模块
+          CONFIG_PACKAGE_php8-mod-openssl=y
+
+          # 其他依赖OpenSSL的包
+          CONFIG_PACKAGE_luci-app-passwall=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_Xray_Plugin=y
+          CONFIG_PACKAGE_luci-app-passwall_INCLUDE_SingBox=y
+          CONFIG_PACKAGE_xray-core=y
+          CONFIG_PACKAGE_xray-plugin=y
+          CONFIG_PACKAGE_sing-box=y
+          CONFIG_PACKAGE_chinadns-ng=y
+          CONFIG_PACKAGE_dns2socks=y
+          CONFIG_PACKAGE_ipt2socks=y
+          CONFIG_PACKAGE_microsocks=y
+          CONFIG_PACKAGE_smartdns=y
+          CONFIG_PACKAGE_geoview=y
+
+          # OpenVPN Easy-RSA (用于生成证书)
+          CONFIG_PACKAGE_openvpn-easy-rsa=y
+
+          # 基础SSL库依赖
+          CONFIG_PACKAGE_libgnutls=y
+          CONFIG_PACKAGE_libnettle=y
+          CONFIG_PACKAGE_libtasn1=y
           EOF
-          
           make defconfig
-          echo "✅ 配置生成完成，关键配置项："
-          grep -E "CONFIG_PACKAGE|CONFIG_OPENVPN|CONFIG_OPENSSL" .config | grep -v "^#"
+          echo "==== 配置摘要 ===="
+          grep -E "CONFIG_TARGET|CONFIG_PACKAGE|CONFIG_OPENVPN|MGMT|OPENSSL|SSL|CRYPTO" .config
 
-      - name: 8. 清理旧构建（可选）
-        if: github.event.inputs.clean_build == 'true'
+      - name: 8. 先编译openssl依赖（确保优先编译）
         run: |
           cd openwrt-sdk
-          make clean
-          rm -rf dl/* build_dir/* staging_dir/* tmp/*
-          echo "✅ 已执行完整清理"
-
-      - name: 9. 下载所有依赖源码包
-        run: |
-          cd openwrt-sdk
-          make download -j${{ env.MAKE_JOBS }}
-          find dl -size -1024c -exec rm -f {} \;
-          echo "✅ 依赖源码包下载完成"
-
-      - name: 10. 编译依赖库（按顺序）
-        run: |
-          cd openwrt-sdk
-          
-          echo "===== 开始编译依赖链 ====="
-          
-          # 第1层：基础库
-          for pkg in libopenssl3 libcrypto3 libssl3 zlib libubox libuci uclient; do
-            echo "🔨 编译基础库: $pkg"
-            make package/$pkg/compile -j${{ env.MAKE_JOBS }} V=sc || make package/$pkg/compile -j1 V=s || echo "⚠️ $pkg 编译失败，继续执行"
-          done
-          
-          # 第2层：openvpn依赖
-          for pkg in lzo kmod-tun iproute2; do
-            echo "🔨 编译依赖: $pkg"
-            make package/$pkg/compile -j${{ env.MAKE_JOBS }} V=sc || make package/$pkg/compile -j1 V=s || echo "⚠️ $pkg 编译失败，继续执行"
-          done
-          
-          # 第3层：工具类
-          for pkg in bash jq netcat openssl-util; do
-            echo "🔨 编译工具: $pkg"
-            make package/$pkg/compile -j${{ env.MAKE_JOBS }} V=sc || make package/$pkg/compile -j1 V=s || echo "⚠️ $pkg 编译失败，继续执行"
-          done
-          
-          # 第4层：LuCI相关
-          for pkg in luci-compat luci-base; do
-            echo "🔨 编译LuCI: $pkg"
-            make package/feeds/luci/$pkg/compile -j${{ env.MAKE_JOBS }} V=sc || make package/$pkg/compile -j1 V=s || echo "⚠️ $pkg 编译失败，继续执行"
-          done
-          
-          echo "✅ 依赖编译完成"
-
-      - name: 11. 编译完整版openvpn-openssl（带MANAGEMENT）
-        run: |
-          cd openwrt-sdk
-          
-          echo "===== 编译 openvpn-openssl（完整版） ====="
-          
-          OPENVPN_PATH=$(find feeds -type d -path "*/net/openvpn" | head -1)
-          
-          if [ -n "$OPENVPN_PATH" ]; then
-            echo "找到openvpn源码: $OPENVPN_PATH"
-            make package/feeds/packages/openvpn/compile -j${{ env.MAKE_JOBS }} V=sc
+          echo "==== 编译 openssl 核心库 ===="
+          # 先编译openssl基础库
+          make package/openssl/compile V=s -j$MAKE_JOBS 2>&1 | tee openssl-compile-log.txt
+          # 检查openssl IPK是否生成
+          OPENSSL_IPK=$(find bin -name "*libopenssl3*.ipk" -type f | head -1)
+          if [ -z "$OPENSSL_IPK" ]; then
+            echo "==== openssl 编译日志（最后100行）===="
+            tail -100 openssl-compile-log.txt
+            echo "❌ libopenssl3 编译失败"
+            exit 1
           else
-            echo "使用默认路径编译"
-            make package/openvpn/compile -j${{ env.MAKE_JOBS }} V=sc
+            echo "✅ libopenssl3 编译成功: $OPENSSL_IPK"
           fi
+
+      - name: 9. 编译其他依赖（失败忽略）
+        run: |
+          cd openwrt-sdk
+          for pkg in $OTHER_DEPENDENCIES; do
+            echo "==== 编译 $pkg（失败忽略） ===="
+            pkg_path=$(find package feeds -name $pkg -type d | head -1)
+            if [ -n "$pkg_path" ]; then
+              make package/$pkg/compile V=sc -j$MAKE_JOBS || echo "⚠ $pkg 编译失败，跳过"
+            else
+              echo "⚠ $pkg 在 feeds 中未找到，跳过"
+            fi
+          done
+
+      - name: 10. 编译核心包（openvpn-openssl + 主插件，失败终止）
+        run: |
+          cd openwrt-sdk
+          # 先编译带 MANAGEMENT 接口的 openvpn-openssl
+          echo "==== 编译 openvpn-openssl（带 MANAGEMENT 接口） ===="
+          if [ -d "feeds/packages/net/openvpn" ]; then
+            make package/openvpn/compile V=s -j$MAKE_JOBS 2>&1 | tee openvpn-compile-log.txt
+            # 检查 openvpn-openssl IPK 是否生成
+            OPENVPN_IPK=$(find bin -name "*openvpn-openssl*.ipk" -type f | head -1)
+            if [ -z "$OPENVPN_IPK" ]; then
+              echo "==== openvpn-openssl 编译日志（最后100行）===="
+              tail -100 openvpn-compile-log.txt
+              echo "❌ openvpn-openssl 编译失败"
+              exit 1
+            else
+              echo "✅ openvpn-openssl 编译成功: $OPENVPN_IPK"
+            fi
+          else
+            echo "❌ openvpn-openssl 源码目录不存在"
+            exit 1
+          fi
+
+          # 编译主插件
+          echo "==== 编译 luci-app-openvpn-admin ===="
+          [ ! -d "package/luci-app-openvpn-admin" ] && { echo "插件目录缺失"; exit 1; }
+          make package/luci-app-openvpn-admin/clean
+          make package/luci-app-openvpn-admin/compile V=s -j$MAKE_JOBS 2>&1 | tee plugin-compile-log.txt
+          MAIN_IPK=$(find bin -name "*luci-app-openvpn-admin*.ipk" -type f | head -1)
+          if [ -z "$MAIN_IPK" ]; then
+            echo "==== 主插件编译日志（最后100行）===="
+            tail -100 plugin-compile-log.txt
+            echo "❌ 主插件编译失败"
+            exit 1
+          else
+            echo "✅ 主插件编译成功: $MAIN_IPK"
+          fi
+
+      - name: 11. 调试 - 查找所有编译输出
+        run: |
+          cd openwrt-sdk
+          echo "==== 搜索所有 IPK 文件 ===="
+          find . -name "*.ipk" -type f 2>/dev/null | sort
           
+          echo "==== 查看 bin 目录结构 ===="
+          find bin -type f 2>/dev/null | head -30
+          
+          echo "==== 查看 openvpn 和 openssl 相关 IPK ===="
+          find bin/packages -name "*openvpn*.ipk" -o -name "*openssl*.ipk" -o -name "*ssl*.ipk" 2>/dev/null | sort
+          
+          echo "==== 检查编译日志中的错误 ===="
+          grep -i "error\|failed\|cannot\|undefined" openssl-compile-log.txt openvpn-compile-log.txt plugin-compile-log.txt 2>/dev/null | head -20 || true
+
+      - name: 12. 收集编译产物（包含所有依赖）
+        run: |
+          cd openwrt-sdk
+          
+          mkdir -p ../output-x86_64
+          
+          # 复制openssl相关依赖包
+          echo "==== 复制 OpenSSL 依赖包 ===="
+          for openssl_pkg in libopenssl3 libssl3 libcrypto3 openssl-util; do
+            IPK_PATH=$(find bin -name "*$openssl_pkg*.ipk" -type f | head -1)
+            if [ -n "$IPK_PATH" ]; then
+              cp "$IPK_PATH" ../output-x86_64/
+              echo "✅ 已复制 $openssl_pkg: $(basename $IPK_PATH)"
+            fi
+          done
+          
+          # 复制 openvpn-openssl IPK
           OPENVPN_IPK=$(find bin -name "*openvpn-openssl*.ipk" -type f | head -1)
           if [ -n "$OPENVPN_IPK" ]; then
-            echo "✅ openvpn-openssl 编译成功: $(basename $OPENVPN_IPK)"
-          else
-            echo "❌ openvpn-openssl 编译失败"
-            exit 1
+            cp "$OPENVPN_IPK" ../output-x86_64/
+            echo "✅ 已复制 openvpn-openssl: $(basename $OPENVPN_IPK)"
+            # 验证 MANAGEMENT 接口是否包含
+            openvpn_bin=$(find build_dir -name "openvpn" -type f | grep "openvpn-openssl" | head -1)
+            if [ -n "$openvpn_bin" ]; then
+              $openvpn_bin --version | grep -i management || echo "⚠ 未检测到 MANAGEMENT 接口标识，但配置已启用"
+            fi
           fi
-
-      - name: 12. 编译openvpn-easy-rsa
-        run: |
-          cd openwrt-sdk
-          echo "===== 编译 openvpn-easy-rsa ====="
-          make package/feeds/packages/openvpn-easy-rsa/compile -j${{ env.MAKE_JOBS }} V=sc || \
-          make package/openvpn-easy-rsa/compile -j1 V=s
-
-      - name: 13. 编译主插件 luci-app-openvpn-admin
-        id: compile_plugin
-        run: |
-          cd openwrt-sdk
           
-          echo "===== 编译 ${{ env.PLUGIN_NAME }} ====="
-          
-          make package/${{ env.PLUGIN_NAME }}/clean
-          
-          make package/${{ env.PLUGIN_NAME }}/compile -j${{ env.MAKE_JOBS }} V=sc || {
-            echo "多线程编译失败，尝试单线程详细输出"
-            make package/${{ env.PLUGIN_NAME }}/compile -j1 V=s
-          }
-          
-          PLUGIN_IPK=$(find bin -name "*${{ env.PLUGIN_NAME }}*.ipk" -type f | head -1)
-          if [ -n "$PLUGIN_IPK" ]; then
-            echo "✅ 主插件编译成功: $(basename $PLUGIN_IPK)"
-            echo "plugin_success=true" >> $GITHUB_OUTPUT
-          else
-            echo "❌ 主插件编译失败"
-            echo "plugin_success=false" >> $GITHUB_OUTPUT
-            exit 1
+          # 复制主插件 IPK
+          MAIN_IPK=$(find bin -name "*luci-app-openvpn-admin*.ipk" -type f | head -1)
+          if [ -n "$MAIN_IPK" ]; then
+            cp "$MAIN_IPK" ../output-x86_64/
+            echo "✅ 已复制主插件: $(basename $MAIN_IPK)"
           fi
-
-      - name: 14. 收集所有编译产物（完整依赖集）
-        id: collect
-        run: |
-          cd openwrt-sdk
           
-          OUTPUT_DIR="$GITHUB_WORKSPACE/openvpn-admin-bundle"
-          mkdir -p $OUTPUT_DIR
-          
-          echo "===== 收集编译产物到: $OUTPUT_DIR ====="
-          
-          PKG_PATTERNS="
-            *luci-app-openvpn-admin*.ipk
-            *openvpn-openssl*.ipk
-            *openvpn-easy-rsa*.ipk
-            *luci-compat*.ipk
-            *kmod-tun*.ipk
-            *netcat*.ipk
-            *jq*.ipk
-            *bash*.ipk
-            *openssl-util*.ipk
-            *libopenssl3*.ipk
-            *libssl3*.ipk
-            *libcrypto3*.ipk
-            *liblzo*.ipk
-            *libubox*.ipk
-            *libuci*.ipk
-            *luci-base*.ipk
-            *luci-lib-ipkg*.ipk
-            *rpcd*.ipk
-          "
-          
-          for pattern in $PKG_PATTERNS; do
-            find bin -name "$pattern" -type f 2>/dev/null | while read ipk; do
-              cp -v "$ipk" "$OUTPUT_DIR/"
-            done
+          # 复制其他依赖 IPK
+          for pkg in $OTHER_DEPENDENCIES; do
+            IPK_PATH=$(find bin -name "*$pkg*.ipk" -type f | head -1)
+            if [ -n "$IPK_PATH" ] && [ ! -f "../output-x86_64/$(basename $IPK_PATH)" ]; then
+              cp "$IPK_PATH" ../output-x86_64/
+              echo "已复制依赖: $(basename $IPK_PATH)"
+            fi
           done
           
-          find bin/packages -name "*.ipk" -type f 2>/dev/null | grep -E "libubox|libuci|uclient|libjson|libubus" | while read ipk; do
-            cp -v "$ipk" "$OUTPUT_DIR/" 2>/dev/null || true
-          done
-          
-          cd $OUTPUT_DIR
-          
-          # 核心修复：这一行缩进严格对齐，<<-EOF后换行，EOF顶格
-          cat > README.txt <<-EOF
-          ==============================================
-          OpenVPN Admin 完整依赖包 - ImmortalWrt ${{ env.SDK_VERSION }}
-          ==============================================
+          echo "==== 输出目录内容 ===="
+          ls -lh ../output-x86_64/
 
-          【编译时间】$(date)
-          【目标架构】x86_64
-          【插件版本】luci-app-openvpn-admin
-          【OpenVPN版本】openvpn-openssl (启用MANAGEMENT接口)
-          【OpenSSL版本】3.x (完整功能)
-
-          【安装方法】
-          1. 将所有ipk文件上传到路由器 /tmp 目录
-          2. 执行以下命令：
-             cd /tmp
-             opkg update
-             opkg install *.ipk --force-depends
-          3. 刷新LuCI页面，在"服务"菜单中找到"OpenVPN Admin"
-
-          【文件列表】
-          $(ls -lh *.ipk 2>/dev/null | awk '{printf "  %-50s %s\n", $9, $5}')
-
-          【验证MANAGEMENT】
-          openvpn --version | grep management
-
-          【注意事项】
-          - 如遇依赖缺失，请先运行: opkg update
-          - 建议在ImmortalWrt 24.10.x版本使用
-          ==============================================
-          EOF
-          
-          IPK_COUNT=$(ls *.ipk 2>/dev/null | wc -l)
-          echo "✅ 共收集 $IPK_COUNT 个IPK文件"
-          echo "📁 输出目录: $OUTPUT_DIR"
-          
-          echo "OUTPUT_DIR=$OUTPUT_DIR" >> $GITHUB_ENV
-          echo "OUTPUT_DIR=$OUTPUT_DIR" >> $GITHUB_OUTPUT
-          echo "IPK_COUNT=$IPK_COUNT" >> $GITHUB_OUTPUT
-          
-          echo "===== 输出目录内容 ====="
-          ls -la $OUTPUT_DIR
-
-      - name: 15. 创建压缩包
-        id: package
+      - name: 13. 清理缓存
         run: |
-          cd ${{ env.OUTPUT_DIR }}
-          
-          ARCHIVE_NAME="openvpn-admin-full-x86_64-${{ env.SDK_VERSION }}.tar.gz"
-          
-          tar -czf ../$ARCHIVE_NAME *
-          mv ../$ARCHIVE_NAME .
-          
-          echo "✅ 压缩包创建成功: $ARCHIVE_NAME"
-          echo "ARCHIVE_NAME=$ARCHIVE_NAME" >> $GITHUB_OUTPUT
-          echo "ARCHIVE_PATH=${{ env.OUTPUT_DIR }}/$ARCHIVE_NAME" >> $GITHUB_OUTPUT
-          
-          ls -lh $ARCHIVE_NAME
+          echo "==== 开始清理缓存 ===="
+          cd openwrt-sdk
+          make clean || echo "清理失败，继续执行"
+          rm -rf dl/* build_dir/* staging_dir/* tmp/* 2>/dev/null || true
+          rm -f compile-log.txt openssl-compile-log.txt openvpn-compile-log.txt plugin-compile-log.txt 2>/dev/null || true
+          echo "清理完成，剩余空间:"
+          df -h
 
-      - name: 16. 上传编译产物到GitHub Actions
+      - name: 14. 上传编译产物
         uses: actions/upload-artifact@v4
         with:
-          name: openvpn-admin-full-x86_64-${{ env.SDK_VERSION }}
-          path: ${{ env.OUTPUT_DIR }}/
-          retention-days: 30
-          if-no-files-found: error
+          name: openvpn-admin-x86_64
+          path: output-x86_64/
+          retention-days: 7
 
-      - name: 17. 生成构建报告
+      - name: 15. 构建报告
         if: always()
         run: |
           echo "========================================"
-          echo "📊 构建状态报告"
+          echo "构建状态报告 - X86_64"
           echo "========================================"
-          echo "🔹 工作流: ${{ github.workflow }}"
-          echo "🔹 运行编号: ${{ github.run_number }}"
-          echo "🔹 SDK版本: ${{ env.SDK_VERSION }}"
-          echo "🔹 插件名称: ${{ env.PLUGIN_NAME }}"
-          echo "🔹 编译状态: ${{ job.status }}"
+          echo "架构：x86_64 (64位)"
+          echo "固件版本：ImmortalWrt 24.10.0"
+          echo "作业状态: ${{ job.status }}"
+          echo "SDK 下载状态: ${{ steps.sdk.outcome }}"
           echo ""
-          
-          if [ -d "${{ env.OUTPUT_DIR }}" ]; then
-            echo "📦 输出目录: ${{ env.OUTPUT_DIR }}"
-            echo "📦 IPK数量: $(ls ${{ env.OUTPUT_DIR }}/*.ipk 2>/dev/null | wc -l)"
-            echo ""
-            echo "📋 IPK列表:"
-            ls -lh ${{ env.OUTPUT_DIR }}/*.ipk 2>/dev/null | awk '{printf "  %-50s %s\n", $9, $5}'
+          if [ -d output-x86_64 ]; then
+            IPK_COUNT=$(find output-x86_64 -name "*.ipk" 2>/dev/null | wc -l)
+            echo "📦 生成的 IPK 数量: $IPK_COUNT"
+            echo "📋 IPK 列表:"
+            ls -lh output-x86_64/
+            
+            # 检查核心包
+            OPENSSL_IPK=$(find output-x86_64 -name "*libopenssl3*.ipk" 2>/dev/null | head -1)
+            OPENVPN_IPK=$(find output-x86_64 -name "*openvpn-openssl*.ipk" 2>/dev/null | head -1)
+            MAIN_IPK=$(find output-x86_64 -name "*luci-app-openvpn-admin*.ipk" 2>/dev/null | head -1)
+            
+            if [ -n "$OPENSSL_IPK" ]; then
+              echo "✅ libopenssl3: $(basename $OPENSSL_IPK)"
+              echo "📊 文件大小: $(du -h $OPENSSL_IPK | cut -f1)"
+            else
+              echo "❌ libopenssl3 编译失败"
+            fi
+            
+            if [ -n "$OPENVPN_IPK" ]; then
+              echo "✅ 带 MANAGEMENT 接口的 openvpn-openssl: $(basename $OPENVPN_IPK)"
+              echo "📊 文件大小: $(du -h $OPENVPN_IPK | cut -f1)"
+            else
+              echo "❌ openvpn-openssl 编译失败"
+            fi
+            
+            if [ -n "$MAIN_IPK" ]; then
+              echo "✅ 主插件: $(basename $MAIN_IPK)"
+              echo "📊 文件大小: $(du -h $MAIN_IPK | cut -f1)"
+            else
+              echo "❌ 主插件编译失败"
+            fi
           else
             echo "❌ 输出目录不存在"
           fi
-          
-          echo "========================================"
-          echo "✅ 报告生成完成"
-          echo "========================================"
-
-      - name: 18. 创建Release（可选）
-        uses: softprops/action-gh-release@v1
-        if: success()
-        with:
-          tag_name: openvpn-admin-${{ env.SDK_VERSION }}-${{ github.run_number }}
-          name: OpenVPN Admin 完整依赖包 (ImmortalWrt ${{ env.SDK_VERSION }})
-          body: |
-            ## OpenVPN Admin 完整编译包
-            
-            ### 📦 包含组件
-            - **主插件**: `luci-app-openvpn-admin`
-            - **OpenVPN服务端**: `openvpn-openssl`（**已启用MANAGEMENT接口**）
-            - **证书管理**: `openvpn-easy-rsa`
-            - **LuCI依赖**: `luci-compat`, `luci-base`
-            - **加密库**: `libopenssl3`, `libssl3`, `libcrypto3`（完整功能）
-            - **系统依赖**: `kmod-tun`, `bash`, `jq`, `netcat`, `openssl-util` 等
-            
-            ### 🎯 适用环境
-            - **架构**: x86_64 (64位)
-            - **固件**: ImmortalWrt ${{ env.SDK_VERSION }} 或更高版本
-            - **OpenSSL版本**: 3.x
-            
-            ### 📥 下载文件
-            请从下方Artifacts或Assets下载 `openvpn-admin-full-x86_64-${{ env.SDK_VERSION }}.tar.gz`
-            
-            ### 🔧 安装方法
-            ```bash
-            # 解压并安装
-            tar -xzf openvpn-admin-full-x86_64-*.tar.gz
-            cd openvpn-admin-bundle
-            opkg install *.ipk
