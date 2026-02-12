@@ -8,8 +8,13 @@ jobs:
     timeout-minutes: 180
     env:
       MAKE_JOBS: 4
-      # ImmortalWrt 24.10.0 官方SDK地址（x86_64）
-      SDK_URL: "https://downloads.immortalwrt.org/releases/24.10.0/targets/x86/64/immortalwrt-sdk-24.10.0-x86-64_gcc-13.2.0_musl.Linux-x86_64.tar.xz"
+      # 修正：使用 ImmortalWrt 24.10 最新可用的 SDK 地址（快照版/稳定分支）
+      # 主地址：24.10 分支官方快照地址
+      SDK_URL_MAIN: "https://downloads.immortalwrt.org/snapshots/targets/x86/64/immortalwrt-sdk-x86-64_gcc-13.2.0_musl.Linux-x86_64.tar.xz"
+      # 备用地址1：23.05.4 稳定版（兼容24.10分支编译）
+      SDK_URL_BACKUP1: "https://downloads.immortalwrt.org/releases/23.05.4/targets/x86/64/immortalwrt-sdk-23.05.4-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+      # 备用地址2：官方镜像站
+      SDK_URL_BACKUP2: "https://mirrors.pku.edu.cn/immortalwrt/releases/23.05.4/targets/x86/64/immortalwrt-sdk-23.05.4-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
       # 核心依赖（补充libnl相关）
       CORE_DEPENDENCIES: "openvpn-openssl luci-app-openvpn-admin libnl libnl-genl"
       # 完整依赖列表（补充libnl、openssl3相关）
@@ -24,12 +29,40 @@ jobs:
           sudo apt-get update && sudo apt-get install -y build-essential libncurses5-dev gawk git wget unzip python3 python3-pip file rsync curl python3-pyelftools subversion time libnl-3-dev libnl-genl-3-dev libnl-route-3-dev
           sudo pip3 install pyelftools || true
 
-      - name: 3. 下载并解压 SDK
+      - name: 3. 下载并解压 SDK（增加容错，自动切换备用地址）
         id: sdk
         run: |
-          wget --timeout=60 --tries=3 $SDK_URL -O sdk.tar.xz || { echo "SDK 下载失败"; exit 1; }
+          # 定义下载函数
+          download_sdk() {
+            local url=$1
+            echo "尝试下载 SDK: $url"
+            if wget --timeout=60 --tries=3 $url -O sdk.tar.xz; then
+              echo "SDK 下载成功: $url"
+              return 0
+            else
+              echo "SDK 下载失败: $url"
+              return 1
+            fi
+          }
+
+          # 优先尝试主地址（24.10快照版）
+          if download_sdk $SDK_URL_MAIN; then
+            echo "使用主地址 SDK 完成下载"
+          elif download_sdk $SDK_URL_BACKUP1; then
+            echo "使用备用地址1 SDK 完成下载"
+          elif download_sdk $SDK_URL_BACKUP2; then
+            echo "使用备用地址2 SDK 完成下载"
+          else
+            echo "所有 SDK 地址下载失败"
+            exit 1
+          fi
+
+          # 解压 SDK
           tar xf sdk.tar.xz && mv $(find . -maxdepth 1 -type d -name "*sdk*" | head -1) openwrt-sdk
           ls -la openwrt-sdk/
+          # 输出 SDK 版本信息（便于调试）
+          echo "SDK 版本信息："
+          cat openwrt-sdk/include/version.mk 2>/dev/null || echo "无版本文件"
 
       - name: 4. 替换feeds源为24.10分支
         run: |
@@ -69,7 +102,7 @@ jobs:
           # 优先安装核心依赖（补充libnl、openssl）
           ./scripts/feeds install -f openvpn-openssl openssl luci-base luci-lib-jsonc luci-compat libnl libnl-genl libnl-route
           # 安装openssl3相关库
-          ./scripts/feeds install libopenssl3 libssl3 libcrypto3 || true
+          ./scripts/feeds install libssl3 libcrypto3 || true
           # 安装全部库（兜底）
           ./scripts/feeds install -a -f || true
           echo "==== 已安装的 feeds ===="
@@ -360,7 +393,7 @@ jobs:
           echo "构建状态报告 - X86_64"
           echo "========================================"
           echo "架构：x86_64 (64位)"
-          echo "固件版本：ImmortalWrt 24.10.0"
+          echo "固件版本：ImmortalWrt 24.10 (快照版/23.05.4兼容版)"
           echo "作业状态: ${{ job.status }}"
           echo "SDK 下载状态: ${{ steps.sdk.outcome }}"
           echo ""
