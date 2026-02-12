@@ -1,4 +1,4 @@
-name: 编译openssl_libopenssl3 luci-app-openvpn-admin (X86_64)
+name: 编译24.10openssl_libopenssl3 luci-app-openvpn-admin (X86_64)-
 on: 
   workflow_dispatch:  # 手动运行，不自动触发
 
