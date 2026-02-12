@@ -1,4 +1,4 @@
-name: 2026-2-12-16
+name: openvpn-admin
 on: 
   workflow_dispatch:  # 手动运行，不自动触发
 
