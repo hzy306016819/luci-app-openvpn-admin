@@ -177,23 +177,6 @@ jobs:
           echo "==== 配置摘要 ===="
           grep -E "CONFIG_TARGET|CONFIG_PACKAGE|CONFIG_OPENVPN|MGMT|OPENSSL|SSL|CRYPTO" .config
 
-      - name: 8. 先编译openssl依赖（确保优先编译）
-        run: |
-          cd openwrt-sdk
-          echo "==== 编译 openssl 核心库 ===="
-          # 先编译openssl基础库
-          make package/openssl/compile V=s -j$MAKE_JOBS 2>&1 | tee openssl-compile-log.txt
-          # 检查openssl IPK是否生成
-          OPENSSL_IPK=$(find bin -name "*libopenssl3*.ipk" -type f | head -1)
-          if [ -z "$OPENSSL_IPK" ]; then
-            echo "==== openssl 编译日志（最后100行）===="
-            tail -100 openssl-compile-log.txt
-            echo "❌ libopenssl3 编译失败"
-            exit 1
-          else
-            echo "✅ libopenssl3 编译成功: $OPENSSL_IPK"
-          fi
-
       - name: 9. 编译其他依赖（失败忽略）
         run: |
           cd openwrt-sdk
@@ -267,7 +250,7 @@ jobs:
           
           # 复制openssl相关依赖包
           echo "==== 复制 OpenSSL 依赖包 ===="
-          for openssl_pkg in libopenssl3 libssl3 libcrypto3 openssl-util; do
+          for openssl_pkg in libssl3 libcrypto3 openssl-util; do
             IPK_PATH=$(find bin -name "*$openssl_pkg*.ipk" -type f | head -1)
             if [ -n "$IPK_PATH" ]; then
               cp "$IPK_PATH" ../output-x86_64/
@@ -340,18 +323,10 @@ jobs:
             echo "📋 IPK 列表:"
             ls -lh output-x86_64/
             
-            # 检查核心包
-            OPENSSL_IPK=$(find output-x86_64 -name "*libopenssl3*.ipk" 2>/dev/null | head -1)
+            # 检查核心包          
             OPENVPN_IPK=$(find output-x86_64 -name "*openvpn-openssl*.ipk" 2>/dev/null | head -1)
             MAIN_IPK=$(find output-x86_64 -name "*luci-app-openvpn-admin*.ipk" 2>/dev/null | head -1)
-            
-            if [ -n "$OPENSSL_IPK" ]; then
-              echo "✅ libopenssl3: $(basename $OPENSSL_IPK)"
-              echo "📊 文件大小: $(du -h $OPENSSL_IPK | cut -f1)"
-            else
-              echo "❌ libopenssl3 编译失败"
-            fi
-            
+                              
             if [ -n "$OPENVPN_IPK" ]; then
               echo "✅ 带 MANAGEMENT 接口的 openvpn-openssl: $(basename $OPENVPN_IPK)"
               echo "📊 文件大小: $(du -h $OPENVPN_IPK | cut -f1)"
