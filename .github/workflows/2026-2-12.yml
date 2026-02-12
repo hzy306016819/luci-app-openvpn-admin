@@ -78,11 +78,8 @@ jobs:
           CONFIG_OPENVPN_openssl_ENABLE_MANAGEMENT=y
           CONFIG_OPENVPN_openssl_ENABLE_LZO=y
           CONFIG_OPENVPN_openssl_ENABLE_LZ4=y
-          CONFIG_OPENVPN_openssl_ENABLE_FRAGMENT=y
-          CONFIG_OPENVPN_openssl_ENABLE_PORT_SHARE=y
-          CONFIG_OPENVPN_openssl_ENABLE_SMALL=y
 
-          CONFIG_PACKAGE_libopenssl=y
+          CONFIG_PACKAGE_libopenssl3=y
           CONFIG_PACKAGE_libustream-openssl=y
           CONFIG_PACKAGE_openssl-util=y
           EOF
