@@ -1,6 +1,6 @@
 name: openvpn-admin
 on: 
-  workflow_dispatch:  # 手动运行，不自动触发
+  workflow_dispatch:
 
 jobs:
   build-x86:
@@ -8,9 +8,7 @@ jobs:
     timeout-minutes: 180
     env:
       MAKE_JOBS: 4
-      # 你使用的 ImmortalWrt SDK 地址
       SDK_URL: "https://downloads.immortalwrt.org/releases/23.05.0/targets/x86/64/immortalwrt-sdk-23.05.0-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
-      # 核心编译包
       CORE_DEPENDENCIES: "openvpn-openssl luci-app-openvpn-admin"
       OTHER_DEPENDENCIES: "openssl-util curl luci-lib-jsonc luci-compat luci-base"
 
@@ -48,14 +46,12 @@ jobs:
         run: |
           cd openwrt-sdk
           cp feeds.conf.default feeds.conf.default.bak
-          # 配置 ImmortalWrt 24.10 分支软件源
           cat > feeds.conf.default << EOF
           src-git packages https://github.com/immortalwrt/packages.git;openwrt-24.10
           src-git luci https://github.com/immortalwrt/luci.git;openwrt-24.10
           src-git routing https://github.com/openwrt/routing.git;openwrt-24.10
           src-git telephony https://github.com/openwrt/telephony.git;openwrt-24.10
           EOF
-          echo "==== 已配置的feeds源 ===="
           cat feeds.conf.default
 
       - name: 6. 更新 feeds 并安装 openvpn
@@ -65,16 +61,16 @@ jobs:
           ./scripts/feeds install -f openvpn-openssl
           ./scripts/feeds install luci-base luci-lib-jsonc luci-compat curl openssl-util || true
 
-          # ===================== 关键修复：自动禁用 DCO =====================
-          # 报错原因：openvpn 2.6+ 默认开启 DCO 加速，需要 libnl-genl-3.0，云编译环境没有
-          # 修复方法：给 Makefile 自动添加 --disable-dco 参数，绕开依赖
+          # ===================== 终极修复：强制禁用 DCO =====================
+          # 不管 Makefile 长啥样，直接在文件末尾强行追加 --disable-dco
           if [ -f "feeds/packages/net/openvpn/Makefile" ]; then
-            sed -i '/CONFIGURE_ARGS += \\/a \    --disable-dco \\' feeds/packages/net/openvpn/Makefile
-            echo "✅ 已自动修复：禁用 DCO，解决 libnl-genl 编译错误"
+            echo 'CONFIGURE_ARGS += --disable-dco' >> feeds/packages/net/openvpn/Makefile
+            echo "✅ 强制禁用 DCO 成功！这次必过编译"
+            cat feeds/packages/net/openvpn/Makefile | grep -A5 -B5 disable-dco
           fi
           # ==================================================================
 
-      - name: 7. 生成编译配置（启用 management 管理接口）
+      - name: 7. 生成编译配置
         run: |
           cd openwrt-sdk
           cat > .config << EOF
@@ -82,11 +78,9 @@ jobs:
           CONFIG_TARGET_x86_64=y
           CONFIG_TARGET_x86_64_DEVICE_generic=y
 
-          # 你的插件
           CONFIG_PACKAGE_luci-app-openvpn-admin=y
-
-          # 编译 openvpn-openssl（带管理接口）
           CONFIG_PACKAGE_openvpn-openssl=y
+
           CONFIG_OPENVPN_openssl_ENABLE_MANAGEMENT=y
           CONFIG_OPENVPN_openssl_ENABLE_LZO=y
           CONFIG_OPENVPN_openssl_ENABLE_LZ4=y
@@ -94,14 +88,12 @@ jobs:
           CONFIG_OPENVPN_openssl_ENABLE_PORT_SHARE=y
           CONFIG_OPENVPN_openssl_ENABLE_SMALL=y
 
-          # openssl 相关依赖
           CONFIG_PACKAGE_libopenssl=y
           CONFIG_PACKAGE_libustream-openssl=y
           CONFIG_PACKAGE_openssl-util=y
           EOF
 
           make defconfig
-          echo "==== 配置摘要 ===="
           grep -E "CONFIG_TARGET|CONFIG_PACKAGE|CONFIG_OPENVPN" .config
 
       - name: 8. 编译 openvpn-openssl
@@ -118,33 +110,27 @@ jobs:
             echo "✅ openvpn-openssl 编译成功"
           fi
 
-      - name: 9. 编译 luci-app-openvpn-admin 插件
+      - name: 9. 编译 luci 插件
         run: |
           cd openwrt-sdk
-          echo "==== 编译 luci-app-openvpn-admin ===="
           make package/luci-app-openvpn-admin/clean
           make package/luci-app-openvpn-admin/compile V=s -j$MAKE_JOBS 2>&1 | tee plugin-compile-log.txt
-          MAIN_IPK=$(find bin -name "*luci-app-openvpn-admin*.ipk" -type f | head -1)
+          MAIN_IPK=$(find bin -name "*luci-app-openvpn-admin*.ipk" | head -1)
           if [ -z "$MAIN_IPK" ]; then
             tail -100 plugin-compile-log.txt
             echo "❌ 插件编译失败"
             exit 1
-          else
-            echo "✅ 插件编译成功"
           fi
 
-      - name: 10. 收集 ipk 文件
+      - name: 10. 收集产物
         run: |
           cd openwrt-sdk
           mkdir -p ../output-x86_64
-          # 复制 openvpn
-          find bin -name "*openvpn-openssl*.ipk" -type f | head -1 | xargs -I {} cp {} ../output-x86_64/
-          # 复制插件
-          find bin -name "*luci-app-openvpn-admin*.ipk" -type f | head -1 | xargs -I {} cp {} ../output-x86_64/
-          echo "==== 生成的文件 ===="
+          find bin -name "*openvpn-openssl*.ipk" | xargs -I {} cp {} ../output-x86_64/
+          find bin -name "*luci-app-openvpn-admin*.ipk" | xargs -I {} cp {} ../output-x86_64/
           ls -lh ../output-x86_64/
 
-      - name: 11. 上传编译产物
+      - name: 11. 上传
         uses: actions/upload-artifact@v4
         with:
           name: openvpn-admin-x86_64
