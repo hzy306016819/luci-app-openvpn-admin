@@ -43,7 +43,7 @@ jobs:
           echo "==== 插件目录结构 ===="
           find package/luci-app-openvpn-admin -type d | sort | head -20
 
-       - name: 4. 替换feeds源为24.10分支
+      - name: 5. 准备插件文件
         run: |
           cd openwrt-sdk
           # 备份原有feeds配置
@@ -57,9 +57,9 @@ jobs:
           EOF
           # 验证feeds配置
           echo "==== 已配置的feeds源 ===="
-          cat feeds.conf.default   
+          cat feeds.conf.default
 
-      - name: 5. 强制更新并安装 openvpn-openssl 源
+      - name: 6. 强制更新并安装 openvpn-openssl 源
         run: |
           cd openwrt-sdk
           # 强制更新所有 feeds（重点保证 packages 源）
