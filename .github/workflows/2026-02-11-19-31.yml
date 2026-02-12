@@ -11,7 +11,7 @@ jobs:
       # 替换为ImmortalWrt 24.10最新SDK地址（x86_64）
       SDK_URL: "https://downloads.immortalwrt.org/releases/23.05.0/targets/x86/64/immortalwrt-sdk-23.05.0-x86-64_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
       # 核心依赖（适配24.10分支）
-      CORE_DEPENDENCIES: "openvpn-openssl luci-app-openvpn-admin libopenssl3"
+      CORE_DEPENDENCIES: "openvpn-openssl luci-app-openvpn-admin"
       # 完整依赖列表（适配24.10分支）
       OTHER_DEPENDENCIES: "openssl-util curl luci-lib-jsonc luci-compat luci-base libssl3 libcrypto3"
 
