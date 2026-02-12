@@ -186,6 +186,12 @@ jobs:
             cp "$MAIN_IPK" ../output-x86_64/
             echo "✅ 已复制主插件: $(basename $MAIN_IPK)"
           fi
+
+          # 复制主插件 IPK
+          libopenssl_IPK=$(find bin -name "*libopenssl*.ipk" -type f | head -1)
+          if [ -n "$libopenssl_IPK" ]; then
+            cp "$libopenssl_IPK" ../output-x86_64/
+           
           
           # 可选：复制其他依赖 IPK（如有）
           for pkg in $OTHER_DEPENDENCIES; do
