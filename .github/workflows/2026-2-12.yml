@@ -1,4 +1,4 @@
-name: 2026-2-12-14：35
+name: 2026-2-12-14:42
 on: 
   workflow_dispatch:  # 手动运行，不自动触发
 
@@ -8,7 +8,7 @@ jobs:
     timeout-minutes: 180
     env:
       MAKE_JOBS: 4
-      # 修正：ImmortalWrt 24.10.0 官方SDK地址（x86_64）
+      # ImmortalWrt 24.10.0 官方SDK地址（x86_64）
       SDK_URL: "https://downloads.immortalwrt.org/releases/24.10.0/targets/x86/64/immortalwrt-sdk-24.10.0-x86-64_gcc-13.2.0_musl.Linux-x86_64.tar.xz"
       # 核心依赖（补充libnl相关）
       CORE_DEPENDENCIES: "openvpn-openssl luci-app-openvpn-admin libnl libnl-genl"
@@ -19,12 +19,9 @@ jobs:
       - name: 1. 检出代码
         uses: actions/checkout@v4
 
-      - name: 2. 安装系统级编译依赖（补充libnl）
+      - name: 2. 安装系统级编译依赖（修正命令格式）
         run: |
-          sudo apt-get update && sudo apt-get install -y \
-            build-essential libncurses5-dev gawk git wget unzip python3 python3-pip file rsync curl python3-pyelftools subversion time \
-            # 关键：安装系统级libnl开发包（解决libnl-genl-3.0缺失）
-            libnl-3-dev libnl-genl-3-dev libnl-route-3-dev
+          sudo apt-get update && sudo apt-get install -y build-essential libncurses5-dev gawk git wget unzip python3 python3-pip file rsync curl python3-pyelftools subversion time libnl-3-dev libnl-genl-3-dev libnl-route-3-dev
           sudo pip3 install pyelftools || true
 
       - name: 3. 下载并解压 SDK
@@ -300,7 +297,7 @@ jobs:
 
           # 复制openssl相关依赖包
           echo "==== 复制 OpenSSL 依赖包 ===="
-          for openssl_pkg in libssl3 libcrypto3 openssl-util libopenssl3; do
+          for openssl_pkg in libssl3 libcrypto3 openssl-util ; do
             IPK_PATH=$(find bin -name "*$openssl_pkg*.ipk" -type f | head -1)
             if [ -n "$IPK_PATH" ]; then
               cp "$IPK_PATH" ../output-x86_64/
