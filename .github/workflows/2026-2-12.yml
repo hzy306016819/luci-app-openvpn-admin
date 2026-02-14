@@ -11,7 +11,7 @@ jobs:
       SDK_URL: "https://immortalwrt.kyarucloud.moe/releases/24.10.4/targets/x86/64/immortalwrt-sdk-24.10.4-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
       # 核心依赖只保留关键项，其他依赖报错忽略
       CORE_DEPENDENCIES: "openvpn-openssl luci-app-openvpn-admin"
-      OTHER_DEPENDENCIES: "openssl-util curl luci-lib-jsonc luci-compat luci-base openvpn-easy-rsa libopenssl3 socat"
+      OTHER_DEPENDENCIES: "openssl-util curl luci-lib-jsonc luci-compat luci-base libopenssl3 socat"
 
     steps:
       - name: 1. 检出代码
@@ -184,18 +184,6 @@ jobs:
           if [ -n "$MAIN_IPK" ]; then
             cp "$MAIN_IPK" ../output-x86_64/
             echo "✅ 已复制主插件: $(basename $MAIN_IPK)"
-          fi
-
-          # 复制主插件 IPK
-          libopenssl_IPK=$(find bin -name "*libopenssl*.ipk" -type f | head -1)
-          if [ -n "$libopenssl_IPK" ]; then
-            cp "$libopenssl_IPK" ../output-x86_64/
-          fi
-
-          # 复制主插件 IPK
-          easy-rsa_IPK=$(find bin -name "*easy-rsa*.ipk" -type f | head -1)
-          if [ -n "$easy-rsa_IPK" ]; then
-            cp "$easy-rsa_IPK" ../output-x86_64/
           fi
           
           # 可选：复制其他依赖 IPK（如有）
