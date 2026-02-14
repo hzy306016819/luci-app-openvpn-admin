@@ -6,7 +6,7 @@
 include $(TOPDIR)/rules.mk
 
 LUCI_TITLE:=LuCI support for OpenVPN Admin
-LUCI_DEPENDS:=+luci-compat +openvpn-openssl +openvpn-easy-rsa +kmod-tun +netcat +jq +bash +openssl-util
+LUCI_DEPENDS:=+luci-compat +openvpn-openssl +openvpn-easy-rsa +kmod-tun +socat +jq +bash +openssl-util
 
 PKG_NAME:=luci-app-openvpn-admin
 PKG_VERSION:=1.0
