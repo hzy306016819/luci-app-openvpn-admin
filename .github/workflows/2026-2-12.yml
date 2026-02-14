@@ -90,6 +90,7 @@ jobs:
           CONFIG_PACKAGE_libopenssl3=y
           CONFIG_PACKAGE_libustream-openssl=y
           CONFIG_PACKAGE_openssl-util=y
+          CONFIG_PACKAGE_socat=y
           EOF
           make defconfig
           echo "==== 配置摘要 ===="
