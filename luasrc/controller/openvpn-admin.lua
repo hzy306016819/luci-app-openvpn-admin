@@ -2452,20 +2452,14 @@ function action_status()
 end
 
 -- 从management接口提取Client ID
+-- 从management接口提取Client ID
 function extract_client_id_from_management(client_name)
     if not client_name or client_name == "" then
         return "N/A"
     end
     
-    -- 从OpenVPN配置获取management接口配置
-    local management_ip, management_port = get_openvpn_management_config()
-    
-    if not management_ip or not management_port then
-        return "N/A"
-    end
-    
-    -- 尝试通过management接口获取状态
-    local management_output = sys.exec(string.format("echo 'status 2' | nc %s %s 2>/dev/null | tail -n +3", management_ip, management_port))
+    -- 发送status命令获取状态
+    local management_output = management_send_command("status 2")
     
     if management_output and management_output ~= "" then
         for line in management_output:gmatch("[^\r\n]+") do
@@ -2688,75 +2682,135 @@ function get_openvpn_version()
 end
 
 -- 从OpenVPN配置文件中获取management接口配置（无日志版本）
+-- 从OpenVPN配置文件中获取management接口配置（强制使用Unix Domain Socket）
+-- 从OpenVPN配置文件中获取management接口配置（根据openvpn-admin配置的实例名）
+-- 从OpenVPN配置文件中获取management接口配置（Unix Domain Socket专用）
 function get_openvpn_management_config()
-    local management_ip = "127.0.0.1"
-    local management_port = "7505"
+    local management_socket = ""  -- 初始为空
+    local management_ip = ""      -- 保留但不再使用
+    local management_port = ""    -- 保留但不再使用
     
+    -- 1. 从openvpn-admin配置获取实例名
     local instance = get_openvpn_instance()
     
     if not instance or instance == "" then
-        return management_ip, management_port
+        nixio.syslog("err", "未配置openvpn_instance")
+        return management_ip, management_port, management_socket
     end
     
-    -- 方法1：使用UCI库直接获取
+    nixio.syslog("debug", "OpenVPN实例名: " .. instance)
+    
+    -- 2. 从openvpn配置读取management配置
     local uci = require("luci.model.uci").cursor()
     
     -- 检查实例是否存在
     local exists = uci:get("openvpn", instance)
     if not exists then
-        return management_ip, management_port
+        nixio.syslog("err", "OpenVPN实例不存在: " .. instance)
+        return management_ip, management_port, management_socket
     end
     
-    -- 尝试从UCI获取management配置
+    -- 获取management配置
     local uci_management = uci:get("openvpn", instance, "management")
     
     if uci_management and uci_management ~= "" then
-        -- 使用gmatch分割所有非空白字符
-        local parts = {}
-        for part in uci_management:gmatch("%S+") do
-            table.insert(parts, part)
-        end
-        if #parts >= 2 then
-            management_ip = parts[1]
-            management_port = parts[2]
-            return management_ip, management_port
-        end
-    end
-    
-    -- 方法2：从配置文件读取（备用）
-    local config_path = get_openvpn_config_path()
-    if config_path and sys.call("test -f " .. config_path .. " 2>/dev/null") == 0 then
-        local config_content = sys.exec("cat " .. config_path .. " 2>/dev/null")
-        if config_content then
-            -- 查找指定实例的management配置
-            local in_correct_instance = false
-            for line in config_content:gmatch("[^\r\n]+") do
-                local trimmed = util.trim(line)
-                if trimmed:match("^config%s+openvpn%s+['\"]" .. instance .. "['\"]") then
-                    in_correct_instance = true
-                elseif trimmed:match("^config%s+") then
-                    in_correct_instance = false
-                end
-                if in_correct_instance and trimmed:match("^option%s+management%s+") then
-                    local value = trimmed:match("option%s+management%s+['\"]([^'\"]+)['\"]") or 
-                                 trimmed:match("option%s+management%s+([^%s]+)")
-                    if value then
-                        local parts = {}
-                        for part in value:gmatch("%S+") do
-                            table.insert(parts, part)
-                        end
-                        if #parts >= 2 then
-                            management_ip = parts[1]
-                            management_port = parts[2]
-                            return management_ip, management_port
-                        end
-                    end
-                end
+        nixio.syslog("debug", "原始management配置: " .. uci_management)
+        
+        -- 检查是否为Unix Domain Socket格式（以/开头）
+        if uci_management:match("^/") then
+            -- 提取纯路径部分（去掉后面的 "unix" 关键字）
+            local pure_path = uci_management:match("^(/[^%s]+)")
+            if pure_path then
+                management_socket = pure_path
+                nixio.syslog("info", "从配置获取Unix Socket路径: " .. management_socket)
+            else
+                management_socket = uci_management
+                nixio.syslog("warning", "Unix Socket格式可能不正确: " .. management_socket)
             end
+        else
+            -- 如果不是Unix Socket格式，可能是旧的TCP配置，使用默认值
+            management_socket = "/var/run/openvpn.sock unix"
+            nixio.syslog("warning", "management配置不是Unix Socket格式，使用默认路径: " .. management_socket)
         end
+    else
+        nixio.syslog("warning", "实例 " .. instance .. " 未配置management选项，使用默认路径")
+        management_socket = "/var/run/openvpn.sock unix"
     end
     
-    return management_ip, management_port
+    return management_ip, management_port, management_socket
+end
+
+-- ======================================================
+-- 新增函数：management_send_command()
+-- 功能：统一发送命令到OpenVPN management接口
+-- 支持：Unix Domain Socket 和 TCP 两种方式
+-- ======================================================
+-- 统一发送命令到OpenVPN management接口（仅支持Unix Domain Socket）
+-- 发送命令到OpenVPN management接口（仅支持Unix Domain Socket）
+function management_send_command(command)
+    local result = ""
+    
+    -- 获取management配置
+    local mgmt_ip, mgmt_port, mgmt_socket = get_openvpn_management_config()
+    
+    nixio.syslog("debug", "management_send_command: command=" .. command .. ", socket=" .. mgmt_socket)
+    
+    -- 检查是否获取到socket路径
+    if not mgmt_socket or mgmt_socket == "" then
+        nixio.syslog("err", "未获取到Unix Socket路径")  -- 修改: error -> err
+        return ""
+    end
+    
+    -- 检查socket文件是否存在
+    if sys.call("test -S " .. mgmt_socket .. " 2>/dev/null") ~= 0 then
+        nixio.syslog("err", "Unix Socket文件不存在: " .. mgmt_socket)  -- 修改: error -> err
+        return ""
+    end
+    
+    -- 检查socat是否可用
+    if sys.call("which socat >/dev/null 2>&1") ~= 0 then
+        nixio.syslog("err", "socat命令不存在，无法连接Unix Socket")  -- 修改: error -> err
+        return ""
+    end
+    
+    -- 创建临时文件
+    local tmp_cmd = "/tmp/openvpn-mgmt-cmd.tmp"
+    local tmp_out = "/tmp/openvpn-mgmt-out.tmp"
+    
+    -- 清理旧文件
+    sys.exec("rm -f " .. tmp_cmd .. " " .. tmp_out .. " 2>/dev/null")
+    
+    -- 写入命令
+    local fd = io.open(tmp_cmd, "w")
+    if fd then
+        fd:write(command .. "\n")
+        fd:close()
+    else
+        nixio.syslog("err", "无法创建临时命令文件")  -- 这行已经是正确的 "err"
+        return ""
+    end
+    
+    -- 使用socat发送命令
+    local socat_cmd = string.format("cat %s | socat -T 2 - UNIX-CONNECT:%s 2>/dev/null | head -n 50 > %s", 
+                                    tmp_cmd, mgmt_socket, tmp_out)
+    nixio.syslog("debug", "执行: " .. socat_cmd)
+    
+    sys.call(socat_cmd)
+    
+    -- 读取输出
+    if sys.call("test -f " .. tmp_out .. " 2>/dev/null") == 0 then
+        local out_fd = io.open(tmp_out, "r")
+        if out_fd then
+            result = out_fd:read("*a") or ""
+            out_fd:close()
+        end
+        sys.exec("rm -f " .. tmp_out)
+    end
+    
+    -- 清理
+    sys.exec("rm -f " .. tmp_cmd)
+    
+    return result
 end
 
 -- 从OpenVPN配置文件中获取端口和协议
@@ -2903,19 +2957,13 @@ function check_openvpn_service()
 end
 
 -- 通过management接口获取当前连接数据
+-- 通过management接口获取当前连接数据
 function get_current_connections_via_management()
     local connected_clients = {}
     local last_activity = "N/A"
     
-    -- 从OpenVPN配置获取management接口配置
-    local management_ip, management_port = get_openvpn_management_config()
-    
-    if not management_ip or not management_port then
-        return connected_clients, last_activity
-    end
-    
-    -- 尝试通过management接口获取状态
-    local management_output = sys.exec(string.format("echo 'status 2' | nc %s %s 2>/dev/null | tail -n +3", management_ip, management_port))
+    -- 发送status命令获取状态
+    local management_output = management_send_command("status 2")
     
     if management_output and management_output ~= "" then
         last_activity = os.date("%Y-%m-%d %H:%M:%S")
@@ -3267,6 +3315,7 @@ function stop_openvpn_service()
 end
 
 -- 断开客户端连接
+-- 断开客户端连接
 function disconnect_client()
     local result = {
         success = false,
@@ -3294,36 +3343,26 @@ function disconnect_client()
         actual_client_id = actual_client_id:match("%d+") or actual_client_id
     end
     
+    -- 如果Client ID无效，尝试通过management接口查找
     if not actual_client_id or actual_client_id == "" or actual_client_id == "nil" or actual_client_id == "N/A" then
         nixio.syslog("info", "Client ID无效，尝试通过management接口查找: " .. client_name)
         
-        local management_ip, management_port = get_openvpn_management_config()
+        -- 获取完整的status信息并查找客户端
+        local management_output = management_send_command("status 2")
         
-        if not management_ip or not management_port then
-            result.message = "无法获取management接口配置"
-            result.debug_info = "请检查OpenVPN配置中的management选项"
-            http.write_json(result)
-            return
-        end
-        
-        local cmd = string.format("echo 'status 2' | /usr/bin/nc %s %s 2>&1 | grep 'CLIENT_LIST' | grep '%s'", management_ip, management_port, client_name)
-        local status_output = sys.exec(cmd)
-        
-        if status_output and status_output ~= "" then
-            nixio.syslog("info", "找到客户端信息: " .. status_output)
-            
-            for line in status_output:gmatch("[^\r\n]+") do
+        if management_output and management_output ~= "" then
+            for line in management_output:gmatch("[^\r\n]+") do
                 if line:match("CLIENT_LIST") and line:match(client_name) then
                     local fields = util.split(line, ",")
                     if #fields >= 11 then
                         actual_client_id = fields[11] or "N/A"
-                        nixio.syslog("info", "提取Client ID: " .. actual_client_id)
+                        nixio.syslog("info", "找到Client ID: " .. actual_client_id)
                         break
                     end
                 end
             end
         else
-            nixio.syslog("warn", "无法通过management接口找到客户端: " .. client_name)
+            nixio.syslog("warning", "无法通过management接口获取状态")
         end
     end
     
@@ -3340,20 +3379,9 @@ function disconnect_client()
     
     nixio.syslog("info", "准备断开连接: client=" .. client_name .. ", client_id=" .. actual_client_id)
     
-    local management_ip, management_port = get_openvpn_management_config()
-    
-    if not management_ip or not management_port then
-        result.message = "无法获取management接口配置"
-        result.debug_info = "请检查OpenVPN配置中的management选项"
-        http.write_json(result)
-        return
-    end
-    
-    local cmd = string.format("echo 'client-kill %s' | /usr/bin/nc %s %s 2>&1", actual_client_id, management_ip, management_port)
-    nixio.syslog("info", "执行命令: " .. cmd)
-    
-    local output = sys.exec(cmd)
-    nixio.syslog("info", "命令输出: " .. (output or "空"))
+    -- 尝试第一种方式：client-kill
+    local kill_command = "client-kill " .. actual_client_id
+    local output = management_send_command(kill_command)
     
     if output and (output:match("SUCCESS") or output:match("INFO") or output:match("client%-kill")) then
         result.success = true
@@ -3367,11 +3395,9 @@ function disconnect_client()
         
         nixio.syslog("info", "断开连接成功: " .. client_name .. " (ID: " .. actual_client_id .. ")")
     else
-        cmd = string.format("echo 'kill %s' | /usr/bin/nc %s %s 2>&1", actual_client_id, management_ip, management_port)
-        nixio.syslog("info", "尝试第二种方法: " .. cmd)
-        
-        output = sys.exec(cmd)
-        nixio.syslog("info", "命令输出: " .. (output or "空"))
+        -- 尝试第二种方式：kill
+        kill_command = "kill " .. actual_client_id
+        output = management_send_command(kill_command)
         
         if output and (output:match("SUCCESS") or output:match("INFO") or output:match("kill")) then
             result.success = true
@@ -3394,18 +3420,13 @@ function disconnect_client()
 end
 
 -- 通过客户端名查找Client ID
+-- 通过客户端名查找Client ID
 function find_client_id_by_name(client_name)
     if not client_name or client_name == "" then
         return nil
     end
     
-    local management_ip, management_port = get_openvpn_management_config()
-    
-    if not management_ip or not management_port then
-        return nil
-    end
-    
-    local management_output = sys.exec(string.format("echo 'status 2' | nc %s %s 2>/dev/null | tail -n +3", management_ip, management_port))
+    local management_output = management_send_command("status 2")
     
     if management_output and management_output ~= "" then
         for line in management_output:gmatch("[^\r\n]+") do
@@ -3428,6 +3449,7 @@ function find_client_id_by_name(client_name)
     return nil
 end
 
+-- 查找客户端的Client ID（AJAX接口）
 -- 查找客户端的Client ID（AJAX接口）
 function find_client_id()
     local result = {
@@ -3456,7 +3478,6 @@ function find_client_id()
     
     http.write_json(result)
 end
-
 -- 将客户端添加到黑名单（基于CN）
 function add_client_to_blacklist_cn(client_cn, duration_seconds, reason)
     if not client_cn or client_cn == "" then return false end
@@ -4513,9 +4534,27 @@ function get_openvpn_uci_config()
     
     config_data.push = push_options
     
-    -- 检查management接口是否启用
-    local management_value = uci:get("openvpn", instance, "management")
-    config_data.enable_management = management_value and management_value ~= ""
+    -- 检查management接口是否启用 - 修改：支持Unix Socket路径
+local management_value = uci:get("openvpn", instance, "management")
+config_data.enable_management = management_value and management_value ~= ""
+
+-- 处理management值，提取纯路径部分供前端显示
+if config_data.enable_management and management_value then
+    -- 检查是否为Unix Socket格式（以/开头）
+    if management_value:match("^/") then
+        -- 提取纯路径部分（去掉后面的 "unix" 关键字）
+        local pure_path = management_value:match("^(/[^%s]+)")
+        config_data.management_path = pure_path or management_value
+        nixio.syslog("debug", "提取management路径: " .. tostring(config_data.management_path))
+    else
+        -- 如果不是Unix Socket格式，可能是旧的TCP配置，使用默认值
+        config_data.management_path = "/var/run/openvpn.sock"
+        nixio.syslog("warning", "management配置不是Unix Socket格式，使用默认路径")
+    end
+else
+    -- 未启用时也设置默认路径
+    config_data.management_path = "/var/run/openvpn.sock"
+end
     
     -- 检查黑名单是否启用
     local client_connect_value = uci:get("openvpn", instance, "client_connect")
@@ -4695,60 +4734,86 @@ function save_openvpn_uci_config()
         end
     end
     
-    -- 处理management接口
-    local enable_management = http.formvalue("enable_management")
-    if enable_management and enable_management == "1" then
-        local management_address = http.formvalue("management_address") or "127.0.0.1"
-        local management_port = http.formvalue("management_port") or "7505"
-        if management_address and management_port then
-            local ok, err = pcall(function()
-                uci:set("openvpn", instance, "management", management_address .. " " .. management_port)
-            end)
-            if not ok then
-                result.message = "设置management接口失败: " .. tostring(err)
-                http.write_json(result)
-                return
-            end
-        end
-        
-        local management_forget = http.formvalue("management_forget_disconnect")
-        if management_forget then
-            local value = (management_forget == "1" or management_forget == "true" or management_forget == "on") and "1" or "0"
-            local ok, err = pcall(function()
-                uci:set("openvpn", instance, "management_forget_disconnect", value)
-            end)
-            if not ok then
-                result.message = "设置management_forget_disconnect失败: " .. tostring(err)
-                http.write_json(result)
-                return
-            end
+    -- 处理management接口 - 增加路径自动补全和目录检查
+local enable_management = http.formvalue("enable_management")
+if enable_management and enable_management == "1" then
+    -- 获取用户输入的路径
+    local management_path = http.formvalue("management_path") or "/var/run/openvpn.sock"
+    
+    -- 去除两端空格
+    management_path = management_path:match("^%s*(.-)%s*$")
+    
+    if management_path and management_path ~= "" then
+        -- 自动处理 unix 后缀
+        local has_unix = management_path:match("%s+unix$") or management_path:match("^unix$")
+        if not has_unix then
+            management_path = management_path .. " unix"
         else
-            -- 默认启用
-            local ok, err = pcall(function()
-                uci:set("openvpn", instance, "management_forget_disconnect", "1")
-            end)
-            if not ok then
-                result.message = "设置management_forget_disconnect默认值失败: " .. tostring(err)
-                http.write_json(result)
-                return
+            -- 统一格式（纯路径 + 空格 + unix）
+            local pure = management_path:match("^(.-)%s+unix$")
+            if pure then
+                pure = pure:match("^%s*(.-)%s*$")
+                management_path = pure .. " unix"
             end
         end
-    else
-        -- 禁用时删除management和management_forget_disconnect
-        local ok1, err1 = pcall(function()
-            uci:delete("openvpn", instance, "management")
-        end)
-        local ok2, err2 = pcall(function()
-            uci:delete("openvpn", instance, "management_forget_disconnect")
-        end)
         
-        if not ok1 then
-            -- 如果删除失败，可能该选项不存在，这不算错误
+        -- 提取纯路径用于目录检查
+        local pure_path = management_path:match("^(.-)%s+unix$") or management_path
+        pure_path = pure_path:match("^%s*(.-)%s*$")
+        
+        -- 检查父目录是否存在
+        local dir = pure_path:match("^(.*/)[^/]*$")
+        if dir then
+            dir = dir:sub(1, -2)  -- 去掉末尾的 '/'
+            if sys.call("test -d " .. dir .. " 2>/dev/null") ~= 0 then
+                -- 尝试创建目录
+                if sys.call("mkdir -p " .. dir .. " 2>/dev/null") ~= 0 then
+                    result.message = "目录 " .. dir .. " 不存在且无法自动创建，请检查权限"
+                    http.write_json(result)
+                    return
+                end
+            end
         end
-        if not ok2 then
-            -- 如果删除失败，可能该选项不存在，这不算错误
+        
+        -- 保存完整 management 值
+        local ok, err = pcall(function()
+            uci:set("openvpn", instance, "management", management_path)
+            nixio.syslog("info", "设置management接口: " .. management_path)
+        end)
+        if not ok then
+            result.message = "设置management接口失败: " .. tostring(err)
+            http.write_json(result)
+            return
         end
     end
+    
+    local management_forget = http.formvalue("management_forget_disconnect")
+    if management_forget then
+        local value = (management_forget == "1" or management_forget == "true" or management_forget == "on") and "1" or "0"
+        local ok, err = pcall(function()
+            uci:set("openvpn", instance, "management_forget_disconnect", value)
+        end)
+        if not ok then
+            result.message = "设置management_forget_disconnect失败: " .. tostring(err)
+            http.write_json(result)
+            return
+        end
+    else
+        -- 默认启用
+        local ok, err = pcall(function()
+            uci:set("openvpn", instance, "management_forget_disconnect", "1")
+        end)
+        if not ok then
+            result.message = "设置management_forget_disconnect默认值失败: " .. tostring(err)
+            http.write_json(result)
+            return
+        end
+    end
+else
+    -- 禁用时删除management和management_forget_disconnect
+    pcall(function() uci:delete("openvpn", instance, "management") end)
+    pcall(function() uci:delete("openvpn", instance, "management_forget_disconnect") end)
+end
     
 -- 处理黑名单
 local enable_blacklist = http.formvalue("enable_blacklist")

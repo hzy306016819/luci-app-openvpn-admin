@@ -22,31 +22,44 @@ end
 -- 获取日志显示行数
 local logs_display_lines = logs_config.display_lines or 1000
 
--- 读取OpenVPN日志文件 - 修复版
+-- ===========================================
+-- 读取OpenVPN日志文件 - 彻底修复空行问题
+-- ===========================================
 local log_content = ""
 local log_exists = sys.call("test -f " .. admin_config.log_file .. " 2>/dev/null")
+
 if log_exists == 0 then
-    -- 使用更可靠的读取方式
+    -- 使用tail命令读取最后N行
     local cmd = "tail -" .. logs_display_lines .. " " .. admin_config.log_file .. " 2>/dev/null"
     local content = sys.exec(cmd)
     
     if content and content ~= "" then
-        -- 处理可能的特殊字符
-        content = content:gsub("\r", ""):gsub("\t", "    ")
+        -- 第一步：统一换行符为\n
+        content = content:gsub("\r\n", "\n"):gsub("\r", "\n")
         
-        -- 分割行并反转顺序（最新日志在最上面）
+        -- 第二步：分割成行数组
         local lines = {}
-        for line in content:gmatch("[^\n]+") do
-            table.insert(lines, line)
+        for line in content:gmatch("([^\n]+)") do
+            -- 去除每行首尾的空白字符
+            line = line:match("^%s*(.-)%s*$")
+            -- 只添加非空行
+            if line and line ~= "" then
+                table.insert(lines, line)
+            end
         end
         
-        -- 反转行顺序
+        -- 第三步：反转顺序（最新日志在最上面）
         local reversed_lines = {}
         for i = #lines, 1, -1 do
             table.insert(reversed_lines, lines[i])
         end
         
-        log_content = table.concat(reversed_lines, "\n")
+        -- 第四步：用换行符连接，确保每行后面只有一个换行符
+        -- 关键修复：使用string.char(10)确保是单个LF
+        log_content = table.concat(reversed_lines, string.char(10))
+        
+        -- 调试信息：记录行数
+        nixio.syslog("debug", "日志处理完成，原始行数: " .. #lines .. "，处理后行数: " .. #reversed_lines)
     else
         log_content = "日志文件为空或无法读取"
     end
@@ -54,9 +67,10 @@ else
     log_content = "日志文件不存在: " .. admin_config.log_file
 end
 
--- 计算日志内容行数
+-- 计算日志内容行数（用于显示）
 local line_count = 0
 if log_content and log_content ~= "" then
+    -- 使用string.gmatch计数，确保准确
     for _ in log_content:gmatch("[^\n]+") do
         line_count = line_count + 1
     end
@@ -77,10 +91,14 @@ local refresh_options = {
 %>
 
 <div class="cbi-map" id="cbi-openvpn-logs">
-    <!-- 页面标题 -->
+    <!-- =========================================== -->
+    <!-- 页面标题区域 -->
+    <!-- =========================================== -->
     <h2 name="content" style="margin-bottom: 3px; margin-top: -5px;"><%:OpenVPN服务器日志%></h2>
     
-    <!-- 说明信息 -->
+    <!-- =========================================== -->
+    <!-- 信息展示区域 -->
+    <!-- =========================================== -->
     <div class="info-box compact">
         <p style="margin: 2px 0;">
             <strong><%:日志文件%>:</strong> <%=admin_config.log_file%>
@@ -92,7 +110,10 @@ local refresh_options = {
             <strong><%:显示顺序%>:</strong> <%:最新日志显示在最上面%>
         </p>
         <p style="margin: 2px 0;">
-            <strong><%:显示行数%>:</strong> <%=logs_display_lines%> 行
+            <strong><%:读取行数%>:</strong> <%=logs_display_lines%> 行
+        </p>
+        <p style="margin: 2px 0;">
+            <strong><%:实际显示%>:</strong> <%=line_count%> 行
         </p>
         <p style="margin: 2px 0;">
             <strong><%:自动刷新%>:</strong> 
@@ -104,7 +125,9 @@ local refresh_options = {
         </p>
     </div>
     
-    <!-- 操作控制 -->
+    <!-- =========================================== -->
+    <!-- 操作控制区域 -->
+    <!-- =========================================== -->
     <div class="controls-box compact">
         <div class="refresh-controls">
             <strong style="margin-right: 10px;"><%:自动刷新%>:</strong>
@@ -126,10 +149,8 @@ local refresh_options = {
                 (<span id="countdown"><%=logs_refresh_interval%></span>秒)
             </span>
         </div>
+        
         <div class="action-buttons">
-            <button class="cbi-button cbi-input-refresh refresh-blue-btn" type="button" onclick="refreshLogs()">
-                <%:手动刷新%>
-            </button>
             <button class="cbi-button cbi-input-remove clear-log-btn" type="button" onclick="clearLogs()">
                 <%:清空日志%>
             </button>
@@ -142,10 +163,32 @@ local refresh_options = {
         </div>
     </div>
     
-    <!-- 日志显示区域 -->
+    <!-- =========================================== -->
+    <!-- 字体大小控制区域 -->
+    <!-- =========================================== -->
+    <div class="font-size-controls">
+        <strong><%:日志字体大小%>:</strong>
+        <label class="font-size-option">
+            <input type="radio" name="font-size" value="small" onchange="changeFontSize('small')">
+            <span class="font-size-label">小</span>
+        </label>
+        <label class="font-size-option">
+            <input type="radio" name="font-size" value="medium" checked onchange="changeFontSize('medium')">
+            <span class="font-size-label">中</span>
+        </label>
+        <label class="font-size-option">
+            <input type="radio" name="font-size" value="large" onchange="changeFontSize('large')">
+            <span class="font-size-label">大</span>
+        </label>
+        <span id="font-size-indicator" style="margin-left: 15px; color: #666; font-size: 12px;">默认: 中</span>
+    </div>
+    
+    <!-- =========================================== -->
+    <!-- 日志显示区域 - 修复空行问题 -->
+    <!-- =========================================== -->
     <div class="log-display-container">
         <div class="log-display-header">
-            <span><%:OpenVPN日志内容%> (最近<%=logs_display_lines%>行)</span>
+            <span><%:OpenVPN日志内容%> (共<%=line_count%>行)</span>
             <div class="log-controls">
                 <button class="cbi-button cbi-button-copy" onclick="copyLogs()">
                     <span class="icon">⎘</span> <%:复制%>
@@ -158,34 +201,17 @@ local refresh_options = {
                 </button>
             </div>
         </div>
-        <div class="log-display-body">
-            <div id="log-display-content" class="log-content"><%=luci.util.pcdata(log_content)%></div>
+        <!-- 使用pre标签，但确保内容紧凑 -->
+        <div class="log-display-body" id="log-display-body">
+            <pre id="log-display-content" class="log-content"><%=luci.util.pcdata(log_content)%></pre>
         </div>
-    </div>
-    
-    <!-- 日志级别过滤 -->
-    <div class="log-filter-controls">
-        <strong style="margin-right: 10px;"><%:日志级别过滤%>:</strong>
-        <label class="log-filter-option">
-            <input type="checkbox" id="filter-error" checked onchange="applyLogFilters()"> ERROR
-        </label>
-        <label class="log-filter-option">
-            <input type="checkbox" id="filter-warn" checked onchange="applyLogFilters()"> WARNING
-        </label>
-        <label class="log-filter-option">
-            <input type="checkbox" id="filter-info" checked onchange="applyLogFilters()"> INFO
-        </label>
-        <label class="log-filter-option">
-            <input type="checkbox" id="filter-debug" onchange="applyLogFilters()"> DEBUG
-        </label>
-        <label class="log-filter-option">
-            <input type="checkbox" id="filter-verbose" onchange="applyLogFilters()"> VERBOSE
-        </label>
     </div>
 </div>
 
 <style type="text/css">
-/* 紧凑布局调整 */
+/* =========================================== */
+/* 整体布局样式 */
+/* =========================================== */
 #cbi-openvpn-logs {
     margin-top: -15px;
 }
@@ -195,7 +221,9 @@ local refresh_options = {
     margin-top: -5px;
 }
 
-/* 信息框紧凑 */
+/* =========================================== */
+/* 信息框样式 */
+/* =========================================== */
 .info-box.compact {
     margin: 0 0 15px 0;
     padding: 6px 8px;
@@ -211,7 +239,9 @@ local refresh_options = {
     line-height: 1.3;
 }
 
-/* 控制框紧凑 */
+/* =========================================== */
+/* 控制框样式 */
+/* =========================================== */
 .controls-box.compact {
     margin: -15px 0 8px 0;
     padding: 8px 10px;
@@ -243,15 +273,59 @@ local refresh_options = {
     gap: 8px;
 }
 
-.refresh-blue-btn {
-    background-color: #2196F3 !important;
-    color: white !important;
-    border: 1px solid #1976D2 !important;
-    padding: 4px 8px !important;
-    font-weight: bold;
+/* =========================================== */
+/* 字体大小控制样式 */
+/* =========================================== */
+.font-size-controls {
+    margin: -15px 0 10px 0;
+    padding: 8px 10px;
+    background-color: var(--controls-bg-color, #f8f9fa);
+    border-radius: 3px;
+    border: 1px solid var(--controls-border-color, #dee2e6);
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
     font-size: 12px;
 }
 
+.font-size-controls strong {
+    color: var(--controls-text-color, #333);
+}
+
+.font-size-option {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+}
+
+.font-size-option input[type="radio"] {
+    margin: 0;
+    cursor: pointer;
+}
+
+.font-size-label {
+    color: var(--filter-option-color, #555);
+    font-size: 12px;
+}
+
+/* 字体大小样式类 */
+#log-display-content.font-small {
+    font-size: 12px !important;
+}
+
+#log-display-content.font-medium {
+    font-size: 16px !important;
+}
+
+#log-display-content.font-large {
+    font-size: 20px !important;
+}
+
+/* =========================================== */
+/* 按钮样式 */
+/* =========================================== */
 .clear-log-btn {
     background-color: #f44336;
     color: white;
@@ -294,7 +368,9 @@ local refresh_options = {
     color: white !important;
 }
 
-/* 日志显示容器 */
+/* =========================================== */
+/* 日志显示容器样式 - 关键修复部分 */
+/* =========================================== */
 .log-display-container {
     border: 1px solid var(--border-color, #ddd);
     border-radius: 4px;
@@ -337,66 +413,77 @@ local refresh_options = {
     font-size: 11px;
 }
 
+/* 日志显示主体 - 关键修复 */
 .log-display-body {
     overflow: auto;
     max-height: 450px;
     background-color: var(--log-body-bg, #ffffff);
     color: var(--log-body-text, #333333);
     font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
-    font-size: 16px;
     line-height: 1.3;
     min-height: 20px;
-    padding: 10px;
-    white-space: pre-wrap;
-    word-wrap: break-word;
+    padding: 0;  /* 移除内边距 */
 }
 
-.log-content {
+/* pre标签样式 - 关键修复 */
+#log-display-content {
     margin: 0;
+    padding: 10px;  /* 只在pre上保留内边距 */
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    font-family: inherit;
+    font-size: 16px;
+    line-height: 1.4;
+    background-color: transparent;
+    border: none;
+    display: block;
+    /* 确保没有额外的边距 */
+}
+
+/* 移除pre标签的所有默认样式 */
+pre {
+    margin: 0;
+    padding: 0;
+    font-family: inherit;
+    font-size: inherit;
+    line-height: inherit;
     white-space: pre-wrap;
     word-wrap: break-word;
 }
 
-/* 日志级别过滤 */
-.log-filter-controls {
-    margin: 5px 0;
-    padding: 8px 10px;
-    background-color: var(--controls-bg-color, #f8f9fa);
-    border-radius: 3px;
-    border: 1px solid var(--controls-border-color, #dee2e6);
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 12px;
-    font-size: 12px;
+/* 确保pre内的内容没有额外间距 */
+pre, pre * {
+    margin: 0;
+    padding: 0;
 }
 
-.log-filter-controls strong {
-    color: var(--controls-text-color, #333);
-}
-
-.log-filter-option {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    color: var(--filter-option-color, #555);
-}
-
-/* 日志级别颜色 */
+/* =========================================== */
+/* 日志级别颜色样式 */
+/* =========================================== */
 .log-error { color: #ff6b6b; }
 .log-warn { color: #ffd93d; }
 .log-info { color: #6bcf7f; }
 .log-debug { color: #4dabf7; }
 .log-verbose { color: #9775fa; }
 
+/* 重要事件颜色 */
+.log-important-connect { color: #4CAF50; font-weight: bold; }
+.log-important-disconnect { color: #f44336; font-weight: bold; }
+.log-important-tls { color: #FF9800; font-weight: bold; }
+.log-important-data { color: #9C27B0; font-weight: bold; }
+
+/* =========================================== */
 /* 倒计时样式 */
+/* =========================================== */
 #refresh-countdown {
     color: var(--countdown-color, #2196F3);
     font-weight: bold;
     font-size: 12px;
 }
 
-/* 下拉选择框和输入框样式 */
+/* =========================================== */
+/* 表单元素样式 */
+/* =========================================== */
 .cbi-input-select {
     padding: 3px 6px;
     border: 1px solid var(--input-border, #ccc);
@@ -415,7 +502,9 @@ local refresh_options = {
     font-size: 12px;
 }
 
-/* 深色模式CSS变量 */
+/* =========================================== */
+/* 深色模式样式 */
+/* =========================================== */
 body.dark-mode {
     --info-box-bg: #2d2d2d;
     --info-box-border: #444;
@@ -462,6 +551,34 @@ body.dark-mode .cbi-button-settings {
     border-color: #F57C00 !important;
 }
 
+/* 深色模式下的字体控制区域 */
+body.dark-mode .font-size-controls {
+    background-color: #2d2d2d;
+    border-color: #444;
+}
+
+body.dark-mode .font-size-controls strong {
+    color: #ddd;
+}
+
+body.dark-mode .font-size-label {
+    color: #aaa;
+}
+
+body.dark-mode #font-size-indicator {
+    color: #aaa !important;
+}
+
+/* 深色模式下的日志显示区域 */
+body.dark-mode .log-display-body {
+    background-color: #1e1e1e;
+    color: #d4d4d4;
+}
+
+body.dark-mode #log-display-content {
+    color: #d4d4d4;
+}
+
 /* 深色模式下的日志级别颜色 */
 body.dark-mode .log-error { color: #ff6b6b; }
 body.dark-mode .log-warn { color: #ffd93d; }
@@ -469,7 +586,9 @@ body.dark-mode .log-info { color: #6bcf7f; }
 body.dark-mode .log-debug { color: #4dabf7; }
 body.dark-mode .log-verbose { color: #9775fa; }
 
-/* 响应式设计 */
+/* =========================================== */
+/* 响应式设计样式 */
+/* =========================================== */
 @media (max-width: 768px) {
     .controls-box.compact {
         flex-direction: column;
@@ -483,7 +602,7 @@ body.dark-mode .log-verbose { color: #9775fa; }
         gap: 5px;
     }
     
-    .log-filter-controls {
+    .font-size-controls {
         flex-direction: column;
         align-items: flex-start;
         gap: 6px;
@@ -493,24 +612,25 @@ body.dark-mode .log-verbose { color: #9775fa; }
 
 <script type="text/javascript">
 //<![CDATA[
-// 全局变量
-var refreshInterval = <%=logs_refresh_interval%>; // 从配置中读取
+/* =========================================== */
+/* 全局变量定义 */
+/* =========================================== */
+
+// 自动刷新相关变量
+var refreshInterval = <%=logs_refresh_interval%>;
 var refreshTimer = null;
 var countdownTimer = null;
 var countdownValue = <%=logs_refresh_interval%>;
-var logFilters = {
-    error: true,
-    warn: true,
-    info: true,
-    debug: false,
-    verbose: false
-};
-var lastLogContent = ""; // 记录上一次的日志内容
-var isRefreshing = false; // 防止重复刷新
-var autoRefreshEnabled = <%=logs_refresh_interval > 0 and "true" or "false"%>; // 从配置中读取
-var logsDisplayLines = <%=logs_display_lines%>; // 日志显示行数
+var lastLogContent = "";
+var autoRefreshEnabled = <%=logs_refresh_interval > 0 and "true" or "false"%>;
 
-// 清空日志文件
+// 字体大小相关变量
+var currentFontSize = 'medium';
+
+/* =========================================== */
+/* 日志操作函数 */
+/* =========================================== */
+
 function clearLogs() {
     if (confirm('确认要清空OpenVPN日志文件吗？此操作不可恢复。')) {
         XHR.post('<%=dsp.build_url("admin/vpn/openvpn-admin/clear_logs")%>', null,
@@ -531,17 +651,14 @@ function clearLogs() {
     }
 }
 
-// 下载日志文件
 function downloadLogs() {
     var url = '<%=dsp.build_url("admin/vpn/openvpn-admin/download_logs")%>';
     window.open(url, '_blank');
 }
 
-// 复制日志内容
 function copyLogs() {
     var logContent = document.getElementById('log-display-content').textContent;
     
-    // 使用现代剪贴板API
     if (navigator.clipboard && window.isSecureContext) {
         navigator.clipboard.writeText(logContent).then(function() {
             alert('日志内容已复制到剪贴板');
@@ -553,7 +670,6 @@ function copyLogs() {
     }
 }
 
-// 传统复制方法
 function fallbackCopyText(text) {
     var textArea = document.createElement("textarea");
     textArea.value = text;
@@ -577,7 +693,6 @@ function fallbackCopyText(text) {
     document.body.removeChild(textArea);
 }
 
-// 滚动到底部
 function scrollToBottom() {
     var logBody = document.querySelector('.log-display-body');
     if (logBody) {
@@ -585,7 +700,6 @@ function scrollToBottom() {
     }
 }
 
-// 滚动到顶部
 function scrollToTop() {
     var logBody = document.querySelector('.log-display-body');
     if (logBody) {
@@ -593,34 +707,84 @@ function scrollToTop() {
     }
 }
 
-// 应用日志过滤器
-function applyLogFilters() {
-    logFilters.error = document.getElementById('filter-error').checked;
-    logFilters.warn = document.getElementById('filter-warn').checked;
-    logFilters.info = document.getElementById('filter-info').checked;
-    logFilters.debug = document.getElementById('filter-debug').checked;
-    logFilters.verbose = document.getElementById('filter-verbose').checked;
+/* =========================================== */
+/* 字体大小控制函数 */
+/* =========================================== */
+
+function changeFontSize(size) {
+    currentFontSize = size;
     
-    refreshLogs();
+    var logContent = document.getElementById('log-display-content');
+    if (!logContent) return;
+    
+    logContent.classList.remove('font-small', 'font-medium', 'font-large');
+    
+    switch(size) {
+        case 'small':
+            logContent.classList.add('font-small');
+            document.getElementById('font-size-indicator').textContent = '小字体';
+            break;
+        case 'medium':
+            logContent.classList.add('font-medium');
+            document.getElementById('font-size-indicator').textContent = '中字体';
+            break;
+        case 'large':
+            logContent.classList.add('font-large');
+            document.getElementById('font-size-indicator').textContent = '大字体';
+            break;
+        default:
+            logContent.classList.add('font-medium');
+            document.getElementById('font-size-indicator').textContent = '中字体';
+    }
+    
+    try {
+        localStorage.setItem('openvpn-log-fontsize', size);
+    } catch (e) {
+        console.log('无法保存字体设置到localStorage');
+    }
 }
 
-// 应用日志级别颜色
+function loadFontSizeSetting() {
+    try {
+        var savedSize = localStorage.getItem('openvpn-log-fontsize');
+        if (savedSize && (savedSize === 'small' || savedSize === 'medium' || savedSize === 'large')) {
+            var radioButtons = document.getElementsByName('font-size');
+            for (var i = 0; i < radioButtons.length; i++) {
+                if (radioButtons[i].value === savedSize) {
+                    radioButtons[i].checked = true;
+                    break;
+                }
+            }
+            changeFontSize(savedSize);
+        } else {
+            changeFontSize('medium');
+        }
+    } catch (e) {
+        console.log('无法读取localStorage，使用默认字体大小');
+        changeFontSize('medium');
+    }
+}
+
+/* =========================================== */
+/* 日志内容处理函数 - 修复空行问题 */
+/* =========================================== */
+
 function applyLogLevelColors(content) {
     if (!content || typeof content !== 'string') return '';
     
     try {
-        // 替换不同级别的日志消息
-        content = content.replace(/(ERROR)/gi, '<span class="log-error">$1</span>');
-        content = content.replace(/(WARNING)/gi, '<span class="log-warn">$1</span>');
-        content = content.replace(/(INFO)/gi, '<span class="log-info">$1</span>');
-        content = content.replace(/(DEBUG)/gi, '<span class="log-debug">$1</span>');
-        content = content.replace(/(VERBOSE)/gi, '<span class="log-verbose">$1</span>');
+        // 先处理特殊的高亮
+        content = content.replace(/(Peer Connection Initiated)/g, '<span class="log-important-connect">$1</span>');
+        content = content.replace(/(client-instance exiting)/g, '<span class="log-important-disconnect">$1</span>');
+        content = content.replace(/(TLS:)/g, '<span class="log-important-tls">$1</span>');
+        content = content.replace(/(Data Channel:)/g, '<span class="log-important-data">$1</span>');
         
-        // 高亮重要信息
-        content = content.replace(/(Peer Connection Initiated)/gi, '<span style="color: #4CAF50; font-weight: bold;">$1</span>');
-        content = content.replace(/(client-instance exiting)/gi, '<span style="color: #f44336; font-weight: bold;">$1</span>');
-        content = content.replace(/(TLS:)/gi, '<span style="color: #FF9800; font-weight: bold;">$1</span>');
-        content = content.replace(/(Data Channel:)/gi, '<span style="color: #9C27B0; font-weight: bold;">$1</span>');
+        // 替换不同级别的日志消息
+        content = content.replace(/\b(ERROR)\b/g, '<span class="log-error">$1</span>');
+        content = content.replace(/\b(WARNING)\b/g, '<span class="log-warn">$1</span>');
+        content = content.replace(/\b(INFO)\b/g, '<span class="log-info">$1</span>');
+        content = content.replace(/\b(DEBUG)\b/g, '<span class="log-debug">$1</span>');
+        content = content.replace(/\b(VERBOSE)\b/g, '<span class="log-verbose">$1</span>');
     } catch (e) {
         console.error('应用日志颜色时出错:', e);
     }
@@ -628,49 +792,10 @@ function applyLogLevelColors(content) {
     return content;
 }
 
-// 过滤日志内容
-function filterLogContent(content) {
-    if (!content || typeof content !== 'string') return '';
-    
-    try {
-        var lines = content.split('\n');
-        var filteredLines = [];
-        
-        for (var i = 0; i < lines.length; i++) {
-            var line = lines[i];
-            if (!line || line.trim() === '') continue;
-            
-            var include = false;
-            
-            if (logFilters.error && line.match(/ERROR/i)) include = true;
-            if (logFilters.warn && line.match(/WARNING/i)) include = true;
-            if (logFilters.info && line.match(/INFO/i)) include = true;
-            if (logFilters.debug && line.match(/DEBUG/i)) include = true;
-            if (logFilters.verbose && line.match(/VERBOSE/i)) include = true;
-            
-            // 如果没有级别标签但包含关键信息
-            if (!include) {
-                if (line.includes('Peer Connection Initiated') || 
-                    line.includes('client-instance exiting') ||
-                    line.includes('TLS:') ||
-                    line.includes('Data Channel:')) {
-                    include = true;
-                }
-            }
-            
-            if (include) {
-                filteredLines.push(line);
-            }
-        }
-        
-        return filteredLines.join('\n');
-    } catch (e) {
-        console.error('过滤日志内容时出错:', e);
-        return content;
-    }
-}
+/* =========================================== */
+/* 自动刷新控制函数 */
+/* =========================================== */
 
-// 更改刷新间隔
 function changeRefreshInterval(value) {
     var customInput = document.getElementById('custom-interval');
     
@@ -696,7 +821,6 @@ function changeRefreshInterval(value) {
     }
 }
 
-// 设置自定义间隔
 function setCustomInterval(value) {
     var interval = parseInt(value);
     if (interval >= 1 && interval <= 300) {
@@ -710,7 +834,6 @@ function setCustomInterval(value) {
     }
 }
 
-// 开始自动刷新
 function startAutoRefresh() {
     if (!autoRefreshEnabled) return;
     
@@ -730,7 +853,6 @@ function startAutoRefresh() {
     }, 1000);
 }
 
-// 停止自动刷新
 function stopAutoRefresh() {
     if (refreshTimer) {
         clearInterval(refreshTimer);
@@ -742,20 +864,17 @@ function stopAutoRefresh() {
     }
 }
 
-// 更新倒计时显示
 function updateCountdown() {
     document.getElementById('countdown').textContent = countdownValue;
 }
 
-// 刷新日志数据
+/* =========================================== */
+/* 日志数据获取和更新函数 - 关键修复 */
+/* =========================================== */
+
 function refreshLogs() {
-    if (isRefreshing) return;
-    
-    isRefreshing = true;
-    
     XHR.get('<%=dsp.build_url("admin/vpn/openvpn-admin/get_logs")%>', null,
         function(x, data) {
-            isRefreshing = false;
             if (x && x.status == 200) {
                 try {
                     var result = JSON.parse(x.responseText);
@@ -763,7 +882,6 @@ function refreshLogs() {
                         updateLogs(result.data);
                     } else {
                         console.warn('获取日志失败:', result.message);
-                        // 显示错误信息
                         var displayElement = document.getElementById('log-display-content');
                         if (displayElement) {
                             displayElement.innerHTML = '<span style="color: red;">获取日志失败: ' + result.message + '</span>';
@@ -771,7 +889,6 @@ function refreshLogs() {
                     }
                 } catch (e) {
                     console.error('解析JSON失败:', e);
-                    // 显示错误信息
                     var displayElement = document.getElementById('log-display-content');
                     if (displayElement) {
                         displayElement.innerHTML = '<span style="color: red;">解析日志数据失败: ' + e.message + '</span>';
@@ -788,24 +905,23 @@ function refreshLogs() {
     );
 }
 
-// 更新日志显示
+/**
+ * 更新日志显示 - 彻底修复空行问题
+ */
 function updateLogs(data) {
     try {
         if (data && data.log_content !== undefined) {
             var logContent = data.log_content;
+            
+            // 关键修复：移除所有前导和尾随的空白行
+            logContent = logContent.replace(/^\s+|\s+$/g, '');
             
             // 检查内容是否变化
             if (logContent === lastLogContent) {
                 return;
             }
             
-            // 保存当前内容
             lastLogContent = logContent;
-            
-            // 应用过滤
-            if (logFilters) {
-                logContent = filterLogContent(logContent);
-            }
             
             // 应用日志级别颜色
             logContent = applyLogLevelColors(logContent);
@@ -814,6 +930,7 @@ function updateLogs(data) {
             var displayElement = document.getElementById('log-display-content');
             if (displayElement) {
                 displayElement.innerHTML = logContent;
+                changeFontSize(currentFontSize);
             }
         } else {
             console.warn('日志数据为空');
@@ -831,27 +948,39 @@ function updateLogs(data) {
     }
 }
 
-// HTML转义函数
-function escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+/**
+ * 修复当前显示日志的空行问题
+ */
+function fixEmptyLines() {
+    var displayElement = document.getElementById('log-display-content');
+    if (!displayElement) return;
+    
+    var content = displayElement.textContent || displayElement.innerText;
+    if (!content) return;
+    
+    // 移除所有前导空白行
+    content = content.replace(/^\s+/, '');
+    
+    // 将连续的多个换行符替换为单个换行符
+    content = content.replace(/\n\s*\n/g, '\n');
+    
+    // 移除尾随空白行
+    content = content.replace(/\s+$/, '');
+    
+    var coloredContent = applyLogLevelColors(content);
+    displayElement.innerHTML = coloredContent;
+    changeFontSize(currentFontSize);
 }
 
-// 页面加载完成后初始化
+/* =========================================== */
+/* 页面初始化 */
+/* =========================================== */
+
 window.addEventListener('load', function() {
     console.log('日志页面初始化...');
     
     try {
-        // 初始化过滤器
-        document.getElementById('filter-error').checked = logFilters.error;
-        document.getElementById('filter-warn').checked = logFilters.warn;
-        document.getElementById('filter-info').checked = logFilters.info;
-        document.getElementById('filter-debug').checked = logFilters.debug;
-        document.getElementById('filter-verbose').checked = logFilters.verbose;
-        
-        // 从配置中获取自动刷新设置
+        /* ----- 初始化自动刷新设置 ----- */
         var configRefreshInterval = <%=logs_refresh_interval%>;
         var configRefreshEnabled = <%=logs_refresh_interval > 0 and "true" or "false"%>;
         
@@ -885,31 +1014,25 @@ window.addEventListener('load', function() {
             console.log('日志自动刷新已禁用');
         }
         
-        // 初始应用日志级别颜色
+        /* ----- 初始化字体大小设置 ----- */
+        loadFontSizeSetting();
+        
+        /* ----- 修复初始空行问题 ----- */
+        setTimeout(function() {
+            fixEmptyLines();
+        }, 100);
+        
+        /* ----- 保存初始内容作为对比 ----- */
         var displayElement = document.getElementById('log-display-content');
         if (displayElement) {
-            var initialContent = displayElement.textContent || displayElement.innerText;
-            if (initialContent && initialContent.trim() !== '') {
-                var coloredContent = applyLogLevelColors(initialContent);
-                displayElement.innerHTML = coloredContent;
-            }
+            lastLogContent = (displayElement.textContent || displayElement.innerText).replace(/^\s+|\s+$/g, '');
         }
-        
-        // 保存初始内容作为对比
-        var displayElement = document.getElementById('log-display-content');
-        if (displayElement) {
-            lastLogContent = displayElement.textContent || displayElement.innerText;
-        }
-        
-        // 初始加载一次日志（延迟执行，确保页面完全加载）
-        setTimeout(refreshLogs, 500);
         
     } catch (e) {
         console.error('页面初始化时出错:', e);
     }
 });
 
-// 页面卸载时停止自动刷新
 window.addEventListener('beforeunload', function() {
     stopAutoRefresh();
 });

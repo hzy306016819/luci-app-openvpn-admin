@@ -3,34 +3,102 @@
 <%
 local dsp = require "luci.dispatcher"
 local util = require("luci.util")
-local sys = require("luci.sys")  -- 添加sys模块
-local uci = require("luci.model.uci").cursor()  -- 添加uci模块
+local sys = require("luci.sys")
+local uci = require("luci.model.uci").cursor()
 
 -- 从openvpn-admin.lua模块获取配置
 local openvpn_admin = require "luci.controller.openvpn-admin"
 local admin_config = openvpn_admin.get_admin_config()
 
--- 使用 openvpn-admin 模块的函数获取管理接口配置
-local management_ip, management_port = openvpn_admin.get_openvpn_management_config()
-local management_interface = management_ip .. ":" .. management_port
+-- 获取实例名称（从openvpn-admin配置）
+local openvpn_instance = admin_config.openvpn_instance or "myvpn"
 
--- 获取实例名称
-local openvpn_instance = admin_config.openvpn_instance or ""
-
--- 测试管理接口连接：发送命令并检查响应
+-- 从openvpn配置读取management信息
+local management_ip = ""
+local management_port = ""
+local management_socket = ""
+local management_display = "未配置"
 local management_active = false
-local test_output = ""
-local test_cmd = string.format("echo 'status 2' | /usr/bin/nc %s %s 2>&1 | head -2", management_ip, management_port)
-test_output = sys.exec(test_cmd)
 
-if test_output then
-    if test_output:match(">INFO:") or test_output:match("OpenVPN Management") or test_output:match("TITLE,OpenVPN") then
-        management_active = true
+-- 检查实例是否在openvpn配置中存在
+if openvpn_instance and openvpn_instance ~= "" then
+    -- 从UCI读取management配置
+    local mgmt_config = uci:get("openvpn", openvpn_instance, "management")
+    
+    if mgmt_config and mgmt_config ~= "" then
+        -- 检查是否为Unix Socket格式（以/开头）
+        if mgmt_config:match("^/") then
+            -- 提取纯socket路径（去掉后面的 "unix" 关键字）
+            local pure_path = mgmt_config:match("^(/[^%s]+)")
+            if pure_path then
+                management_socket = pure_path
+                management_display = "management Unix Socket: " .. management_socket
+                
+                -- 检查socket文件是否存在
+                if sys.call("test -S " .. management_socket .. " 2>/dev/null") == 0 then
+                    -- 使用 management_send_command 测试连接
+                    -- 修改1：添加 pcall 保护，防止 management_send_command 抛出异常
+                    local success, test_output = pcall(function()
+                        return openvpn_admin.management_send_command("status 2")
+                    end)
+                    
+                    if success and test_output and test_output ~= "" then
+                        -- 修改2：更精确的检测逻辑
+                        if test_output:match(">INFO:") or 
+                           test_output:match("OpenVPN Management") or 
+                           test_output:match("TITLE,OpenVPN") or
+                           test_output:match("SUCCESS") then
+                            management_active = true
+                            management_display = management_display .. " ✓ (已连接)"
+                        else
+                            management_display = management_display .. " ✗ (连接失败 - 返回数据异常)"
+                            -- 调试信息（可选，正式环境可删除）
+                            -- nixio.syslog("debug", "management输出: " .. tostring(test_output))
+                        end
+                    else
+                        if not success then
+                            management_display = management_display .. " ✗ (连接异常: " .. tostring(test_output) .. ")"
+                        else
+                            management_display = management_display .. " ✗ (无响应)"
+                        end
+                    end
+                else
+                    management_display = management_display .. " ✗ (文件不存在)"
+                end
+            else
+                management_display = "Socket路径格式错误: " .. mgmt_config
+            end
+        else
+            -- 兼容旧的TCP格式
+            local parts = {}
+            for part in mgmt_config:gmatch("%S+") do
+                table.insert(parts, part)
+            end
+            if #parts >= 2 then
+                management_ip = parts[1]
+                management_port = parts[2]
+                management_display = "TCP: " .. management_ip .. ":" .. management_port .. " (不建议使用)"
+                
+                -- 添加TCP格式的检测（可选）
+                if management_ip == "127.0.0.1" and management_port then
+                    local tcp_check = sys.call("echo 'status 2' | nc " .. management_ip .. " " .. management_port .. " 2>/dev/null | head -1 | wc -l")
+                    if tcp_check and tcp_check > 0 then
+                        management_active = true
+                        management_display = management_display .. " ✓ (已连接 - TCP模式)"
+                    else
+                        management_display = management_display .. " ✗ (连接失败)"
+                    end
+                end
+            else
+                management_display = "配置格式错误: " .. mgmt_config
+            end
+        end
+    else
+        management_display = "实例 " .. openvpn_instance .. " 未配置management选项"
     end
+else
+    management_display = "未配置openvpn_instance"
 end
-
--- 如果测试失败，可以尝试检查进程是否存在，作为备用判断
-
 
 -- 获取openvpn配置路径
 local openvpn_config_path = admin_config.openvpn_config_path or ""
@@ -85,9 +153,9 @@ end
         <p style="margin: 2px 0;">
             <strong><%:数据来源%>:</strong> 
             <% if management_active then %>
-                <span style="color: #28a745;">OpenVPN Management Interface (<%=management_interface%>) ✓</span>
+                <span style="color: #28a745;"><%=management_display%></span>
             <% else %>
-                <span style="color: #dc3545;">OpenVPN Management Interface (<%=management_interface%>) ✗</span>
+                <span style="color: #dc3545;"><%=management_display%></span>
             <% end %>
         </p>
         <p style="margin: 2px 0;">

@@ -448,7 +448,15 @@ local cert_paths = admin_config.openvpn_pki or "/etc/openvpn/pki"
         <!-- Management接口设置 -->
         <div class="cbi-section">
             <h3><%:Management接口设置%></h3>
+
+            <!-- 这里做成和「客户端推送配置」一样的说明区域 -->
+            <div class="cbi-section-descr">
+                    <p><%:Unix Socket 通信路径，必须只填写路径。格式示例: /var/run/openvpn.sock  或: /var/run/openvpn.sock unix%></p>
+                    <p><span style="color:red;"><%:最后显示的都是：/var/run/openvpn.sock unix%><span style="color:red;"><%: 这是正常的。%></span></p>
+                </div>
+
             <div class="cbi-section-node">
+
                 <!-- 启用Management接口 -->
                 <div class="cbi-value">
                     <label class="cbi-value-title" for="enable_management">启用Management接口</label>
@@ -461,38 +469,26 @@ local cert_paths = admin_config.openvpn_pki or "/etc/openvpn/pki"
                         </div>
                     </div>
                 </div>
-                
-                <!-- Management地址 -->
-                <div class="cbi-value management-option" id="management_address_container">
-                    <label class="cbi-value-title" for="management_address">Management地址</label>
+
+                <!-- Management通信路径 -->
+                <div class="cbi-value management-option" id="management_path_container">
+                    <label class="cbi-value-title" for="management_path">Management通信路径</label>
                     <div class="cbi-value-field">
                         <div class="form-input-with-description">
-                            <input type="text" class="cbi-input-text log-input" id="management_address" 
-                                   name="management_address" value="127.0.0.1" />
-                            <span class="input-description">Management接口监听地址</span>
+                            <input type="text" class="cbi-input-text standard-input" id="management_path" 
+                                   name="management_path" value="/var/run/openvpn.sock" />
+                            <span class="input-description">Unix Socket 路径</span>
                         </div>
                     </div>
                 </div>
-                
-                <!-- Management端口 -->
-                <div class="cbi-value management-option" id="management_port_container">
-                    <label class="cbi-value-title" for="management_port">Management端口</label>
-                    <div class="cbi-value-field">
-                        <div class="form-input-with-description">
-                            <input type="number" class="cbi-input-text narrow-input" id="management_port" 
-                                   name="management_port" min="1" max="65535" value="7505" />
-                            <span class="input-description">Management接口监听端口</span>
-                        </div>
-                    </div>
-                </div>
-                
+
                 <!-- 断开连接后忘记客户端 -->
                 <div class="cbi-value management-option" id="management_forget_container">
                     <label class="cbi-value-title" for="management_forget_disconnect">断开后忘记客户端</label>
                     <div class="cbi-value-field">
                         <div class="cbi-input-checkbox">
                             <input type="checkbox" class="cbi-input-checkbox" id="management_forget_disconnect" 
-                                   name="management_forget_disconnect" value="1" />
+                                   name="management_forget_disconnect" value="1" checked="checked" />
                             <label for="management_forget_disconnect"></label>
                             <span class="input-description">断开连接后从管理接口移除客户端记录</span>
                         </div>
@@ -593,7 +589,7 @@ local cert_paths = admin_config.openvpn_pki or "/etc/openvpn/pki"
     color: #666;
     font-size: 12px;
     white-space: nowrap;
-    max-width: 300px;
+    max-width: 500px;
     overflow: hidden;
     text-overflow: ellipsis;
     flex-shrink: 0;
@@ -1182,16 +1178,13 @@ function populateForm(data) {
     toggleManagementOptions(hasManagement);
     
     if (hasManagement && data.management) {
-        var parts = data.management.split(' ');
-        if (parts.length >= 2) {
-            document.getElementById('management_address').value = parts[0];
-            document.getElementById('management_port').value = parts[1];
-        }
-    } else {
-        // 设置默认值但不显示
-        document.getElementById('management_address').value = "127.0.0.1";
-        document.getElementById('management_port').value = "7505";
-    }
+    // 直接使用management值作为路径
+    document.getElementById('management_path').value = data.management;
+    console.log('management_path: ' + data.management);
+} else {
+    // 设置默认Unix Socket路径
+    document.getElementById('management_path').value = "/var/run/openvpn.sock";
+}
     
     if (data.management_forget_disconnect !== undefined) {
         document.getElementById('management_forget_disconnect').checked = data.management_forget_disconnect;
@@ -1269,6 +1262,18 @@ function collectCustomConfig(data) {
             key !== '__type') {
             
             var value = allConfig[key];
+            // 修改：检查是否是management_path字段（来自新界面的值）
+            if (key === 'management_path') {
+                // 这是新的Management路径字段，不添加到自定义配置
+                continue;
+            }
+            
+            // 修改：确保management字段不被添加到自定义配置
+            if (key === 'management' && standardFields.indexOf('management') !== -1) {
+                // management已经在标准字段中，不应该被添加
+                console.log('跳过management字段（标准字段）');
+                continue;
+            }
             if (value && typeof value === 'string' && value !== '') {
                 // 构建配置行
                 customConfig.push("option " + key + " '" + value + "'");
@@ -1356,25 +1361,21 @@ function saveConfig() {
     
     // Management接口
     var enableManagement = document.getElementById('enable_management').checked;
-    formData.append('enable_management', enableManagement ? '1' : '0');
-    console.log('enable_management: ' + (enableManagement ? '1' : '0'));
-    
-    if (enableManagement) {
-        var management_address = document.getElementById('management_address').value;
-        var management_port = document.getElementById('management_port').value;
-        if (management_address) {
-            formData.append('management_address', management_address);
-            console.log('management_address: ' + management_address);
-        }
-        if (management_port) {
-            formData.append('management_port', management_port);
-            console.log('management_port: ' + management_port);
-        }
-        
-        var management_forget = document.getElementById('management_forget_disconnect').checked;
-        formData.append('management_forget_disconnect', management_forget ? '1' : '0');
-        console.log('management_forget_disconnect: ' + (management_forget ? '1' : '0'));
+formData.append('enable_management', enableManagement ? '1' : '0');
+console.log('enable_management: ' + (enableManagement ? '1' : '0'));
+
+if (enableManagement) {
+    // 获取Unix Socket路径 - 修改：使用management_path替代address和port
+    var management_path = document.getElementById('management_path').value;
+    if (management_path) {
+        formData.append('management_path', management_path);
+        console.log('management_path: ' + management_path);
     }
+    
+    var management_forget = document.getElementById('management_forget_disconnect').checked;
+    formData.append('management_forget_disconnect', management_forget ? '1' : '0');
+    console.log('management_forget_disconnect: ' + (management_forget ? '1' : '0'));
+}
     
     // 黑名单设置
     var enableBlacklist = document.getElementById('enable_blacklist').checked;
