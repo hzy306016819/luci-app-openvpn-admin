@@ -1,5 +1,5 @@
 
-name: 3.0
+name: X86_64_3.0
 on: 
   workflow_dispatch:  # 手动运行，不自动触发
 
