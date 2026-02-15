@@ -1008,26 +1008,20 @@ main() {
     
     log_message "info" "开始处理接口事件: $ACTION $INTERFACE (逻辑接口: $MONITOR_INTERFACE)"
     
-    # 等待网络稳定（对于ifup事件）- 针对PPPoE延长等待时间
-    if [ "$ACTION" = "ifup" ]; then
-        log_message "info" "等待网络稳定..."
-        
-        # 根据接口类型设置不同的等待时间
-        case "$MONITOR_INTERFACE" in
-            wan|wan6)
-                # PPPoE拨号需要更长时间，特别是IPv6获取
-                log_message "debug" "WAN接口（可能是PPPoE），等待60秒确保IPv6获取完成..."
-                sleep 60
-                ;;
-            *)
-                # 其他接口等待30秒
-                log_message "debug" "非WAN接口，等待30秒..."
-                sleep 30
-                ;;
-        esac
-        
-        log_message "debug" "网络稳定等待完成"
-    fi
+    #等待60秒确保IPv6获取完成  
+    log_message "info" "等待网络稳定........... 等待60秒确保IPv6获取完成 ➡➡➡➡➡➡➡➡➡➡➡➡➡>️"
+        sleep 10
+    log_message "info" "还需等待 50秒 确保IPv6获取完成 ➡➡➡➡➡➡➡➡➡➡➡➡➡➡➡➡➡➡➡➡➡>️"
+        sleep 10
+    log_message "info" "还需等待 40秒 确保IPv6获取完成 ➡➡➡➡➡➡➡➡➡➡➡➡➡➡➡>"
+        sleep 10
+    log_message "info" "还需等待 30秒 确保IPv6获取完成 ➡➡➡➡➡➡➡➡➡➡>"
+        sleep 10
+    log_message "info" "还需等待 20秒 确保IPv6获取完成 ➡➡➡➡➡>"
+        sleep 10
+    log_message "info" "还需等待 10秒 确保IPv6获取完成 ➡>"
+        sleep 10                                    
+    log_message "debug" "网络稳定等待完成"
     
     # 检查超时
     check_timeout "$script_start_time"
@@ -1296,6 +1290,91 @@ exit 0
         return true
     end
     return false
+end
+
+-- 新增：比较并更新IPv6地址
+function action_compare_and_update_ipv6()
+    local result = {
+        success = false,
+        need_update = false,
+        configured_ipv6 = "",
+        message = ""
+    }
+    
+    -- 获取参数
+    local ipv6_address = http.formvalue("ipv6_address")
+    local instance = http.formvalue("instance")
+    
+    if not ipv6_address or ipv6_address == "" then
+        result.message = "IPv6地址不能为空"
+        http.write_json(result)
+        return
+    end
+    
+    if not instance or instance == "" then
+        instance = get_openvpn_instance()
+    end
+    
+    -- 检查实例是否存在
+    local exists = uci:get("openvpn", instance)
+    if not exists then
+        result.message = "OpenVPN实例不存在: " .. instance
+        http.write_json(result)
+        return
+    end
+    
+    -- 获取当前配置的IPv6地址
+    local configured_ipv6 = uci:get("openvpn", instance, "local") or ""
+    result.configured_ipv6 = configured_ipv6
+    
+    -- 比较地址
+    if configured_ipv6 == ipv6_address then
+        result.success = true
+        result.need_update = false
+        result.message = "IPv6地址一致，无需更新"
+    else
+        -- 需要更新
+        local ok, err = pcall(function()
+            uci:set("openvpn", instance, "local", ipv6_address)
+            uci:save("openvpn")
+            uci:commit("openvpn")
+        end)
+        
+        if ok then
+            result.success = true
+            result.need_update = true
+            result.message = "IPv6地址已更新"
+            nixio.syslog("info", string.format("OpenVPN IPv6地址手动更新: %s -> %s", 
+                         configured_ipv6 or "未配置", ipv6_address))
+        else
+            result.success = false
+            result.message = "更新失败: " .. tostring(err)
+        end
+    end
+    
+    http.write_json(result)
+end
+
+-- 新增：重启OpenVPN服务
+function action_restart_openvpn()
+    local result = {
+        success = false,
+        message = ""
+    }
+    
+    -- 重启OpenVPN服务
+    local ret = sys.call("/etc/init.d/openvpn restart >/dev/null 2>&1")
+    
+    if ret == 0 then
+        result.success = true
+        result.message = "OpenVPN服务重启成功"
+        nixio.syslog("info", "OpenVPN服务手动重启")
+    else
+        result.message = "OpenVPN服务重启失败"
+        nixio.syslog("err", "OpenVPN服务手动重启失败")
+    end
+    
+    http.write_json(result)
 end
 
 -- 检查防火墙规则是否存在
@@ -1803,6 +1882,22 @@ function index()
     -- AJAX接口：保存OpenVPN UCI配置（新增）
     entry({"admin", "vpn", "openvpn-admin", "save_uci_config"}, 
           call("save_openvpn_uci_config"))
+          
+     -- 新增：手动触发Hotplug
+     entry({"admin", "vpn", "openvpn-admin", "manual_trigger_hotplug"}, 
+           call("action_manual_trigger_hotplug"))
+
+     -- 新增：获取Hotplug日志
+     entry({"admin", "vpn", "openvpn-admin", "get_hotplug_log"}, 
+           call("action_get_hotplug_log"))     
+          
+    -- 新增：比较并更新IPv6地址
+    entry({"admin", "vpn", "openvpn-admin", "compare_and_update_ipv6"}, 
+          call("action_compare_and_update_ipv6"))
+
+    -- 新增：重启OpenVPN服务
+    entry({"admin", "vpn", "openvpn-admin", "restart_openvpn"}, 
+          call("action_restart_openvpn"))      
     
     -- AJAX接口：检查防火墙规则（新增）- 这是OpenVPN服务的端口规则
     entry({"admin", "vpn", "openvpn-admin", "check_firewall"}, 
@@ -4964,4 +5059,154 @@ function calculate_total_data(bytes_received, bytes_sent)
     if not bytes_received then bytes_received = 0 end
     if not bytes_sent then bytes_sent = 0 end
     return format_bytes(bytes_received + bytes_sent)
+end
+
+-- 新增：手动触发Hotplug（修复版 - 不使用nohup）
+function action_manual_trigger_hotplug()
+    local result = {
+        success = false,
+        pid = "",
+        message = ""
+    }
+    
+    local monitor_interface = http.formvalue("interface")
+    
+    if not monitor_interface or monitor_interface == "" then
+        result.message = "监控接口不能为空"
+        http.write_json(result)
+        return
+    end
+    
+    local config = get_admin_config()
+    
+    -- 检查Hotplug脚本是否存在
+    local script_path = config.hotplug_script_path or "/etc/openvpn/openvpn_hotplug.sh"
+    
+    if sys.call("test -f " .. script_path .. " 2>/dev/null") ~= 0 then
+        result.message = "Hotplug脚本不存在: " .. script_path
+        http.write_json(result)
+        return
+    end
+    
+    -- 检查脚本是否有执行权限
+    if sys.call("test -x " .. script_path .. " 2>/dev/null") ~= 0 then
+        sys.exec("chmod +x " .. script_path .. " 2>/dev/null")
+    end
+    
+    -- 清理旧日志文件
+    sys.exec("echo '' > /tmp/openvpn_hotplug.log 2>/dev/null")
+    
+    -- 记录开始时间
+    local start_time = os.time()
+    sys.exec("echo '=== 手动触发Hotplug开始 " .. os.date("%Y-%m-%d %H:%M:%S", start_time) .. " ===' > /tmp/openvpn_hotplug.log 2>/dev/null")
+    
+    -- 修改：不使用nohup，直接用 & 后台运行，并将输出重定向到日志文件
+    -- 使用 sh -c 来执行命令
+    local cmd = string.format("sh -c '%s ifup %s >> /tmp/openvpn_hotplug.log 2>&1' &", script_path, monitor_interface)
+    
+    nixio.syslog("info", "执行命令: " .. cmd)
+    
+    local ret = sys.call(cmd)
+    
+    -- 等待脚本启动
+    sys.exec("sleep 0.5")
+    
+    -- 获取进程PID
+    local pid = sys.exec("pgrep -f 'openvpn_hotplug.*ifup' 2>/dev/null | head -1")
+    
+    if pid and pid ~= "" then
+        result.success = true
+        result.pid = util.trim(pid)
+        result.message = "Hotplug脚本已启动"
+        
+        -- 记录PID到日志
+        sys.exec(string.format("echo '进程PID: %s' >> /tmp/openvpn_hotplug.log 2>/dev/null", result.pid))
+        
+        nixio.syslog("info", "手动触发Hotplug脚本，PID: " .. result.pid .. ", 接口: " .. monitor_interface)
+    elseif ret == 0 then
+        result.success = true
+        result.message = "Hotplug脚本已启动，但无法获取PID"
+        nixio.syslog("info", "手动触发Hotplug脚本，接口: " .. monitor_interface)
+    else
+        result.message = "启动Hotplug脚本失败"
+        nixio.syslog("err", "手动触发Hotplug脚本失败")
+    end
+    
+    http.write_json(result)
+end
+
+-- 新增：获取Hotplug日志
+-- 新增：获取Hotplug日志 - 【修改】增强兼容性，确保在ImmortalWrt上也能正确返回
+function action_get_hotplug_log()
+    local result = {
+        success = false,
+        log_exists = false,
+        log_content = "",
+        log_size = 0,
+        start_time = os.time(),
+        message = ""
+    }
+    
+    local log_file = "/tmp/openvpn_hotplug.log"
+    
+    -- 检查日志文件是否存在
+    if sys.call("test -f " .. log_file .. " 2>/dev/null") == 0 then
+        result.log_exists = true
+        
+        -- 获取文件大小 - 使用更兼容的方式
+        local size_cmd = "wc -c < " .. log_file .. " 2>/dev/null | tr -d ' '"
+        local size_output = sys.exec(size_cmd)
+        result.log_size = tonumber(size_output) or 0
+        
+        -- 读取日志内容（限制大小，避免内存问题）
+        if result.log_size > 0 then
+            -- 如果文件太大，只读取最后100KB
+            if result.log_size > 102400 then
+                -- 【修改】使用更兼容的命令，避免编码问题
+                result.log_content = sys.exec("tail -c 102400 " .. log_file .. " 2>/dev/null | tr -d '\\r'")
+            else
+                -- 【修改】读取整个文件，并清理回车符
+                result.log_content = sys.exec("cat " .. log_file .. " 2>/dev/null | tr -d '\\r'")
+            end
+            
+            -- 【新增】确保内容是字符串类型
+            if type(result.log_content) ~= "string" then
+                result.log_content = tostring(result.log_content)
+            end
+            
+            -- 【新增】如果内容为空但有大小，说明可能是二进制或编码问题
+            if result.log_content == "" and result.log_size > 0 then
+                -- 尝试以二进制方式读取
+                local f = io.open(log_file, "rb")
+                if f then
+                    local content = f:read("*all")
+                    f:close()
+                    if content then
+                        -- 过滤掉非ASCII字符，保留可读内容
+                        local filtered = ""
+                        for i = 1, #content do
+                            local byte = string.byte(content, i)
+                            if byte >= 32 and byte <= 126 or byte == 10 or byte == 13 then
+                                filtered = filtered .. string.char(byte)
+                            end
+                        end
+                        result.log_content = filtered
+                    end
+                end
+            end
+        end
+        
+        result.success = true
+    else
+        result.log_exists = false
+        result.message = "日志文件不存在"
+        result.success = true  -- 仍然返回成功，只是日志不存在
+    end
+    
+    -- 【新增】设置明确的JSON响应头
+    http.header("Content-Type", "application/json; charset=utf-8")
+    
+    -- 【修改】直接输出JSON，避免任何额外空白
+    local json_str = require("luci.jsonc").stringify(result)
+    http.write(json_str)
 end
