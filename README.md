@@ -12,6 +12,7 @@
 ## 功能特性
 
 ### 🚀 核心功能
+- **ipv6环境**：支持公网ipv6环境（测试环境：电信ipv6）
 - **实时状态监控**：实时显示 OpenVPN 服务状态和连接客户端
 - **客户端管理**：生成客户端配置文件，支持一键下载
 - **服务端配置**：可视化配置 OpenVPN 服务器参数
@@ -49,6 +50,9 @@
 3. 上传并安装 IPK 文件：
    ```bash
    opkg install luci-app-openvpn-admin_*.ipk
+   安装附带接口管理的openvpn-openssl
+   opkg install libopenssl3_*.ipk
+   opkg install openvpn-openssl_*.ipk
 # 安装效果图（只在安装好的系统测试过，末测试编译）
 <img width="1918" height="880" alt="image" src="https://github.com/user-attachments/assets/7dc22795-2a1d-48f3-9847-1f5e22bcddba" />
 <img width="1918" height="880" alt="image" src="https://github.com/user-attachments/assets/1dffeeb0-e778-40bd-9832-2aa6d1249f15" />
