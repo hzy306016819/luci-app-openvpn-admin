@@ -150,7 +150,7 @@ luci-app-openvpn-admin/
 
 | 脚本文件             | 是否自动生成 | 状态                   | 备注             |
 | :------------------- | :----------- | :--------------------- | :--------------- |
-| openvpn_ipv6         | 手动/自动    | ⚠️ 需要手动创建或替换   | 核心IPv6更新脚本 |
+| openvpn_ipv6         | 自己创建     | ⚠️ 根据自己环境需要手动创建或替换   | 核心IPv6更新脚本 |
 | openvpn_hotplug.sh   | 自动生成     | ✅ 保存设置时生成       | Hotplug系统脚本  |
 | clean-garbage.sh     | 自动生成     | ✅ 启用清理功能时生成   | 垃圾清理脚本     |
 | generate-client.sh   | 自动生成     | ✅ 首次生成客户端时生成 | 客户端配置生成   |
@@ -225,7 +225,7 @@ luci-app-openvpn-admin/
 |                    `option enabled '1'`                     | 启用该 OpenVPN 实例（1 = 启用，0 = 禁用，改 0 后服务不启动） |
 |                `option script_security '3'`                 | 脚本安全级别（3 为最高级，允许执行任意外部脚本，如 client-connect 脚本） |
 |                    `option port '1010'`                     |           服务端监听的端口号（客户端需连接此端口）           |
-|                `option ddns '234.85020.xyz'`                |   DDNS 域名（客户端可通过域名访问服务端，无需记住固定 IP）   |
+|                `option ddns '域名或ip'`                |   DDNS 域名（客户端可通过域名访问服务端，无需记住固定 IP）   |
 |   `option local '240e:3b1:1697:e780:be24:11ff:feba:9e5a'`   | 服务端绑定的本地 IPv6 地址（仅监听该地址，确保 VPN 走 IPv6） |
 | `option client_connect '/etc/openvpn/client-connect-cn.sh'` |  客户端成功连接时执行的脚本（如记录连接日志、分配特定权限）  |
 |       `list push 'route 192.168.100.0 255.255.255.0'`       | 推送给客户端的路由规则：让客户端能访问 192.168.100.0/24 局域网 |
