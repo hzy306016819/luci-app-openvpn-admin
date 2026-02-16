@@ -51,6 +51,21 @@ local cert_paths = admin_config.openvpn_pki or "/etc/openvpn/pki"
         <div class="cbi-section">
             <h3><%:基本设置%></h3>
             <div class="cbi-section-node">
+                
+                <!-- 启用开关 -->
+                <div class="cbi-value">
+                    <label class="cbi-value-title" for="enabled">启用OpenVPN</label>
+                    <div class="cbi-value-field">
+                        <div class="cbi-input-checkbox">
+                            <input type="checkbox" class="cbi-input-checkbox" id="enabled" 
+                                   name="enabled" value="1" />
+                            <label for="enabled"></label>
+                            <span class="input-description">启用或禁用OpenVPN服务</span>
+                        </div>
+                        
+                    </div>
+                </div>
+
                 <!-- OpenVPN实例名称 -->
                 <div class="cbi-value">
                     <label class="cbi-value-title" for="instance">实例名称</label>
@@ -60,20 +75,6 @@ local cert_paths = admin_config.openvpn_pki or "/etc/openvpn/pki"
                                    name="instance" value="<%=openvpn_instance%>" readonly />
                             <span class="input-description">OpenVPN配置中的实例名称</span>
                         </div>
-                    </div>
-                </div>
-                
-                <!-- 启用开关 -->
-                <div class="cbi-value">
-                    <label class="cbi-value-title" for="enabled">启用OpenVPN服务</label>
-                    <div class="cbi-value-field">
-                        <div class="cbi-input-checkbox">
-                            <input type="checkbox" class="cbi-input-checkbox" id="enabled" 
-                                   name="enabled" value="1" />
-                            <label for="enabled"></label>
-                            <span class="input-description">启用或禁用OpenVPN服务</span>
-                        </div>
-                        
                     </div>
                 </div>
                 
